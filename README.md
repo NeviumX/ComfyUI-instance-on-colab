@@ -2,6 +2,8 @@ English | [日本語](README_JP.md)
 
 # ComfyUI instance on Colab
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NeviumX/ComfyUI-instance-on-colab/blob/main/ComfyUI_instance_on_Colab_EN.ipynb)
+
 A notebook that runs ComfyUI on a Google Colab GPU, for use from your browser or from the **Remote Connection** of Comfy Desktop.
 
 - Uses the models you put on Google Drive, and downloads models from Hugging Face and Civitai to Drive.
@@ -16,7 +18,7 @@ A notebook that runs ComfyUI on a Google Colab GPU, for use from your browser or
 
 ## How to use
 
-1. Download [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb) (English) or [ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb) (Japanese) and upload it to [Google Colab](https://colab.research.google.com/). The two are the same except for the language of the text and messages.
+1. Click **Open in Colab** above (it opens the English notebook; the button in the [Japanese README](README_JP.md) opens the Japanese one). You can also download [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb) or [ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb) and upload it to [Google Colab](https://colab.research.google.com/). The two are the same except for the language of the text and messages.
 2. Choose a GPU runtime and run cells 1 to 3 (settings, unpacking the code, setup). Allow access to Drive in the Google dialog that appears. Each cell is operated through its fields and checkboxes; an action with a checkbox only happens when you run the cell with the box checked.
 3. Put your models into the folder for their type under `ComfyUI-Colab/models/` on Drive and run cell 5, or paste a Hugging Face or Civitai URL into cell 4.
 4. Run one of cells 6-1 to 6-3 to start ComfyUI, and open the URL it shows (see "Ways to connect" below).

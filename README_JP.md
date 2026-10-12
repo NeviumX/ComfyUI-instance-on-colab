@@ -2,6 +2,8 @@
 
 # ComfyUI instance on Colab
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NeviumX/ComfyUI-instance-on-colab/blob/main/ComfyUI_instance_on_Colab_JP.ipynb)
+
 Google ColabのGPUでComfyUIを実行し、ブラウザーやComfy Desktopの **Remote Connection** から使うためのノートブックです。
 
 - Google Driveに置いたモデルを使えます。Hugging Face・CivitaiからDriveへダウンロードもできます。
@@ -16,7 +18,7 @@ Google ColabのGPUでComfyUIを実行し、ブラウザーやComfy Desktopの **
 
 ## 使い方
 
-1. [ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb)（日本語）または [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb)（英語）をダウンロードし、[Google Colab](https://colab.research.google.com/) へアップロードします。内容は同じで、説明文とメッセージの言語だけが異なります。
+1. 上の **Open in Colab** をクリックします（日本語版のノートブックが開きます。英語版は [英語のREADME](README.md) のボタンから開けます）。[ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb) または [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb) をダウンロードして、[Google Colab](https://colab.research.google.com/) へアップロードすることもできます。内容は同じで、説明文とメッセージの言語だけが異なります。
 2. GPUランタイムを選び、1〜3のセル（設定・コードの展開・セットアップ）を実行します。表示されるGoogleの画面でDriveへの接続を許可します。各セルは入力欄とチェックボックスで操作し、チェックボックスのある操作はONにして実行したときだけ行われます。
 3. Driveの `ComfyUI-Colab/models/` にある種類別のフォルダーへモデルを置いて5を実行するか、Hugging Face・CivitaiのURLを4へ貼り付けます。
 4. 6-1〜6-3のいずれかを実行してComfyUIを起動し、表示されたURLを開きます（下の「接続方法」）。
