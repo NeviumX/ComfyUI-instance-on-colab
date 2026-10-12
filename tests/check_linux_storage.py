@@ -188,6 +188,13 @@ with tempfile.TemporaryDirectory(prefix="comfy-colab-check-") as temporary:
     assert lock.read_text() == "example-package==1.0\n" and lock.stat().st_uid == account.pw_uid
     storage = runtime.drive_root(config) / "environment"
     original = json.loads((storage / "latest.json").read_text())
+    assert set(original["parts"]) == {"node/example", "state"}
+
+    def stored(save):
+        """Every part a save lists is on Drive and is what the list says it is."""
+        return all(runtime.file_hash(storage / "parts" / part["file"]) == part["sha256"] == part["file"][:64]
+                   for part in save["parts"].values())
+    assert stored(original)
     original_copy = runtime.atomic_copy
     subprocess.run(runtime.app_command([sys.executable, "-c", "import sys; open(sys.argv[1], 'w').write('updated custom node')", str(node)]), check=True)
 
@@ -202,9 +209,7 @@ with tempfile.TemporaryDirectory(prefix="comfy-colab-check-") as temporary:
         pass
     else:
         raise AssertionError("Simulated checkpoint failure did not occur")
-    assert json.loads((storage / "latest.json").read_text()) == original
-    archive = storage / original["archive"]
-    assert runtime.file_hash(archive) == original["sha256"]
+    assert json.loads((storage / "latest.json").read_text()) == original and stored(original)
     print("PASS: failed checkpoint preserves the preceding environment")
 
     # A new runtime: the saved environment comes back owned by the application user.
@@ -212,9 +217,9 @@ with tempfile.TemporaryDirectory(prefix="comfy-colab-check-") as temporary:
     actual_run(["rm", "-rf", runtime.BASE / "environment"])
     (runtime.BASE / "environment").mkdir()
     os.chown(runtime.BASE / "environment", account.pw_uid, account.pw_gid)
-    with archive.open("rb") as stream:
-        runtime.app_action("restore", stdin=stream)
+    runtime.private_write(runtime.PRIVATE / "saved-parts.json", json.dumps(runtime.restore_environment(storage, original)))
     assert node.read_text() == "example custom node" and node.stat().st_uid == account.pw_uid
+    assert runtime.checkpoint(config, force=True) is False  # What was just restored is not sent back.
     assert runtime.checked_lock(runtime.app_action("get", "environment/requirements.lock.txt").decode())
     print("PASS: the environment is restored as the application user")
 
@@ -222,10 +227,14 @@ with tempfile.TemporaryDirectory(prefix="comfy-colab-check-") as temporary:
         subprocess.run(runtime.app_command([sys.executable, "-c", "import sys; open(sys.argv[1], 'w').write(sys.argv[2])",
                                             str(node), "new node version " + str(version)]), check=True)
         runtime.checkpoint(config, force=True)
-    assert len(list(storage.glob("*.tar.gz"))) == 3
+        # Only the custom node changed, so only it was packed and sent.
+        assert json.loads((runtime.PRIVATE / "checkpoint-status.json").read_text())["sent"] == ["node/example"]
+    saves = [json.loads(item.read_text()) for item in (storage / "generations").iterdir()]
     latest = json.loads((storage / "latest.json").read_text())
-    assert runtime.file_hash(storage / latest["archive"]) == latest["sha256"]
-    print("PASS: three environment generations retained and latest pointer verified")
+    assert len(saves) == 3 and latest in saves and all(stored(save) for save in saves)
+    assert {item.name for item in (storage / "parts").iterdir()} == {part["file"] for save in saves for part in save["parts"].values()}
+    assert latest["parts"]["state"] == original["parts"]["state"]  # The unchanged part is the same file as before.
+    print("PASS: three saves are kept, each part is stored once, and only changed parts are sent")
 
     (runtime.BASE / "output/image.png").write_bytes(b"generated")
     (runtime.BASE / "output/leak.txt").symlink_to(secret)
@@ -297,8 +306,7 @@ with tempfile.TemporaryDirectory(prefix="comfy-colab-check-") as temporary:
     actual_run(["rm", "-rf", runtime.BASE / "environment"])
     (runtime.BASE / "environment").mkdir()
     os.chown(runtime.BASE / "environment", account.pw_uid, account.pw_gid)
-    with (storage / updated["archive"]).open("rb") as stream:
-        runtime.app_action("restore", stdin=stream)
+    runtime.private_write(runtime.PRIVATE / "saved-parts.json", json.dumps(runtime.restore_environment(storage, updated)))
     runtime.app_action("prepare")
     assert kept() and (repo / "main.py").read_text() == "version 2\n"
     assert runtime.update_comfyui(config, "v1") is True

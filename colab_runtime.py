@@ -336,9 +336,31 @@ def app_tree_action(action, args, source, sink):
             with sqlite3.connect(repo / "user/comfyui.db") as target:
                 database.backup(target)
     elif action == "archive":
-        with tarfile.open(fileobj=sink, mode="w|gz", compresslevel=1) as tf:
-            for child in sorted(envdir.iterdir()):
-                tf.add(child, arcname=child.name, filter=archive_filter)
+        # One part of the environment, as component_of() divides it.
+        component = args[0]
+
+        def without_other_parts(member):
+            parts = PurePosixPath(member.name).parts
+            if parts[:2] == ("ComfyUI", "user") or (member.isdir() and len(parts) == 3 and parts[1] == "custom_nodes"):
+                return None
+            return archive_filter(member)
+        import gzip
+        # No time of packing in the archive: the same files give the same bytes, and so the same name on Drive.
+        with gzip.GzipFile(fileobj=sink, mode="wb", compresslevel=1, mtime=0) as packed, tarfile.open(
+                fileobj=packed, mode="w|") as tf:
+            if component == "core":
+                tf.add(repo, arcname="ComfyUI", filter=without_other_parts)
+            elif component == "user":
+                tf.add(repo / "user", arcname="ComfyUI/user", filter=archive_filter)
+            elif component == "state":
+                for child in sorted(envdir.iterdir()):
+                    if child.name != "ComfyUI":
+                        tf.add(child, arcname=child.name, filter=archive_filter)
+            elif component.startswith("node/") and component[5:] not in ("", ".", "..") and "/" not in component[5:]:
+                tf.add(repo / "custom_nodes" / component[5:], arcname="ComfyUI/custom_nodes/" + component[5:],
+                       filter=archive_filter)
+            else:
+                raise ValueError(component)
     elif action == "link-models":
         view, cache = Path(args[0]), BASE / "models"
         for parent, _, files in os.walk(cache, followlinks=False):
@@ -679,10 +701,31 @@ def restore_archive(archive, dest):
         tf.extractall(dest, filter="data")
 
 
-def fingerprint(root):
-    entries = []
+GENERATIONS = 3
+PART_NAME = re.compile(r"[a-f0-9]{64}\.tar\.gz")
+GENERATION_NAME = re.compile(r"\d{8}T\d{6}Z-[a-f0-9]{12}\.json")
+WHOLE_ARCHIVE_NAME = re.compile(r"\d{8}T\d{6}Z-[a-f0-9]{12}\.tar\.gz")
+
+
+def component_of(parts):
+    """The separately saved part of the environment a file belongs to: ComfyUI itself, each
+    custom node, the user's data, and the few files kept beside ComfyUI. Saving a workflow
+    then sends the user's data, not the custom nodes with it."""
+    if parts[0] != "ComfyUI":
+        return "state"
+    if len(parts) >= 3 and parts[1] == "user":
+        return "user"
+    if len(parts) >= 4 and parts[1] == "custom_nodes":
+        return "node/" + parts[2]
+    return "core"
+
+
+def component_fingerprints(root):
+    """{component: fingerprint of its files}, from their names, sizes and times."""
+    entries = {}
     for parent, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if not excluded_path((Path(parent) / d).relative_to(root).parts)
+        relative = Path(parent).relative_to(root)
+        dirs[:] = sorted(d for d in dirs if not excluded_path((relative / d).parts)
                          and not (Path(parent) / d).is_symlink())
         for name in sorted(files):
             p = Path(parent) / name
@@ -690,13 +733,44 @@ def fingerprint(root):
                 continue
             try:
                 st = p.stat()
-                entries.append((str(p.relative_to(root)), st.st_size, st.st_mtime_ns))
             except FileNotFoundError:
                 continue
-    return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+            path = relative / name
+            entries.setdefault(component_of(path.parts), []).append((path.as_posix(), st.st_size, st.st_mtime_ns))
+    return {name: hashlib.sha256(json.dumps(found).encode()).hexdigest() for name, found in entries.items()}
+
+
+def discard_old_saves(storage):
+    """Keep the newest saves, and of the parts only what one of them needs. Nothing is deleted
+    but files with the names this notebook gives its own."""
+    def named(folder, pattern):
+        return sorted((item for item in folder.iterdir() if not item.is_symlink() and pattern.fullmatch(item.name)),
+                      key=lambda item: item.name, reverse=True)
+    try:
+        current = (storage / "latest.json").read_text()
+        saves = {save: save.read_text() for save in named(storage / "generations", GENERATION_NAME)}
+        # The save Drive points to is kept whatever its name says of its age, then the newest.
+        kept = sorted(saves, key=lambda save: saves[save] != current)[:GENERATIONS]
+        lists = [json.loads(current), *(json.loads(saves[save]) for save in kept)]
+        needed = {part["file"] for save in lists for part in save.get("parts", {}).values()}
+        needed |= {save["archive"] for save in lists if "archive" in save}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return  # A save that cannot be read: delete nothing it might need.
+    for old in set(saves) - set(kept):
+        old.unlink()
+    for part in named(storage / "parts", PART_NAME):
+        if part.name not in needed:
+            part.unlink()
+    # Whole-environment archives, from before the parts were saved separately, count as older saves.
+    for old in named(storage, WHOLE_ARCHIVE_NAME)[max(0, GENERATIONS - len(kept)):]:
+        if old.name not in needed:
+            old.unlink()
 
 
 def checkpoint(config, force=False):
+    """Save what changed. Each part of the environment is its own archive on Drive, named after
+    its content; a save is a short list of the parts it consists of. Only parts that changed
+    since the last save are packed and sent. force: also make sure Drive still has the rest."""
     import fcntl
     with (PRIVATE / "checkpoint.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -704,7 +778,8 @@ def checkpoint(config, force=False):
         envdir = BASE / "environment"
         save_new_cache_models(config, force=force)
         storage = drive_root(config) / "environment"
-        storage.mkdir(exist_ok=True)
+        for folder in (storage, storage / "parts", storage / "generations"):
+            folder.mkdir(exist_ok=True)
         database = BASE / "database/comfyui.db"
         if database.exists():
             signature = [(p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in
@@ -715,36 +790,76 @@ def checkpoint(config, force=False):
                 app_action("backup-database")
                 db_marker.write_text(signature_text)
         write_lock()
-        marker = PRIVATE / "last-fingerprint"
-        before = fingerprint(envdir)
-        if not force and marker.exists() and marker.read_text() == before:
+        record = PRIVATE / "saved-parts.json"
+        saved = json.loads(record.read_text()) if record.exists() else {}
+        before = component_fingerprints(envdir)
+        parts, sent = {}, []
+        staging = PRIVATE / "part.tar.gz"
+        for name in sorted(before):
+            known = saved.get(name)
+            if known and known["fingerprint"] == before[name] and (
+                    not force or contained_path(storage / "parts", known["file"]).exists()):
+                parts[name] = known
+                continue
+            try:
+                with staging.open("wb") as file:
+                    app_action("archive", name, stdout=file, limit=ARCHIVE_LIMIT, timeout=1800)
+                digest = file_hash(staging)
+                atomic_copy(staging, contained_path(storage / "parts", digest + ".tar.gz"))
+            finally:
+                staging.unlink(missing_ok=True)
+            parts[name] = {"fingerprint": before[name], "file": digest + ".tar.gz", "sha256": digest}
+            sent.append(name)
+        if not sent and set(parts) == set(saved):
             return False
-        staging = PRIVATE / "environment.tar.gz"
-        with staging.open("wb") as file:
-            app_action("archive", stdout=file, limit=ARCHIVE_LIMIT, timeout=1800)
-        after = fingerprint(envdir)
-        if before != after:
-            staging.unlink(missing_ok=True)
+        after = component_fingerprints(envdir)
+        if any(after.get(name) != before[name] for name in sent):
             raise RuntimeError(t("environment.busy"))
-        # Generation files + last-written pointer keep the preceding good snapshot.
-        digest = file_hash(staging)
-        name = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + digest[:12] + ".tar.gz"
-        atomic_copy(staging, contained_path(storage, name))
-        pointer = {"archive": name, "sha256": digest, "python": config["python"],
-                   "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        private_write(PRIVATE / "latest.json", json.dumps(pointer))
+        # The list is written last: until then the preceding save is the one Drive points to.
+        save = {"format": 2, "python": config["python"],
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "parts": {name: {"file": part["file"], "sha256": part["sha256"]} for name, part in parts.items()}}
+        text = json.dumps(save, sort_keys=True)
+        name = (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-"
+                + hashlib.sha256(text.encode()).hexdigest()[:12] + ".json")
+        private_write(PRIVATE / "latest.json", text)
+        atomic_copy(PRIVATE / "latest.json", contained_path(storage / "generations", name))
         atomic_copy(PRIVATE / "latest.json", contained_path(storage, "latest.json"))
-        marker.write_text(after)
-        private_write(PRIVATE / "checkpoint-status.json", json.dumps({"ok": True, **pointer}))
-        staging.unlink(missing_ok=True)
-        # Retain three completed generations; delete only our strictly named archives.
-        archives = [item for item in storage.iterdir()
-                    if not item.is_symlink() and re.fullmatch(r"\d{8}T\d{6}Z-[a-f0-9]{12}\.tar\.gz", item.name)]
-        archives.sort(key=lambda item: (item.stat().st_mtime_ns, item.name), reverse=True)
-        for old in archives[3:]:
-            if old.name != name:
-                contained_path(storage, old.name).unlink()
+        private_write(record, json.dumps(parts))
+        private_write(PRIVATE / "checkpoint-status.json", json.dumps(
+            {"ok": True, "saved_at": save["saved_at"], "python": save["python"], "parts": len(parts), "sent": sent}))
+        discard_old_saves(storage)
         return True
+
+
+def restore_environment(storage, save):
+    """Bring a saved environment back, part by part (or from the single archive of earlier
+    saves). Returns what this runtime then holds that Drive already has, for the next save."""
+    archive = PRIVATE / "restore.tar.gz"
+
+    def bring(folder, name, digest):
+        atomic_copy(contained_path(folder, name), archive)
+        if file_hash(archive) != digest:
+            raise RuntimeError(t("setup.archive_sha256_mismatch"))
+        with archive.open("rb") as stream:
+            app_action("restore", stdin=stream, timeout=2 * APP_TIMEOUT)
+        archive.unlink()
+
+    if "parts" not in save:
+        name = safe_relative(save["archive"])
+        if "/" in name or not name.endswith(".tar.gz"):
+            raise RuntimeError(t("setup.invalid_archive_name"))
+        bring(storage, name, save["sha256"])
+        return {}
+    parts = save["parts"]
+    for part in parts.values():
+        if not PART_NAME.fullmatch(str(part["file"])) or part["file"] != str(part["sha256"]) + ".tar.gz":
+            raise RuntimeError(t("setup.invalid_archive_name"))
+    for name in sorted(parts, key=lambda name: (name != "core", name)):  # ComfyUI first, then what goes into it.
+        bring(storage / "parts", parts[name]["file"], parts[name]["sha256"])
+    restored = component_fingerprints(BASE / "environment")
+    return {name: {"fingerprint": restored[name], "file": parts[name]["file"], "sha256": parts[name]["sha256"]}
+            for name in parts if name in restored}
 
 
 def write_lock():
@@ -847,18 +962,9 @@ def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
         print(t("setup.fresh_environment"))
     elif pointer_path.exists():
         pointer = json.loads(pointer_path.read_text())
-        archive_name = safe_relative(pointer["archive"])
-        if "/" in archive_name or not archive_name.endswith(".tar.gz"):
-            raise RuntimeError(t("setup.invalid_archive_name"))
         if pointer["python"] != config["python"]:
             raise RuntimeError(t("setup.python_changed"))
-        archive = PRIVATE / "restore.tar.gz"
-        atomic_copy(contained_path(storage / "environment", archive_name), archive)
-        if file_hash(archive) != pointer["sha256"]:
-            raise RuntimeError(t("setup.archive_sha256_mismatch"))
-        with archive.open("rb") as stream:
-            app_action("restore", stdin=stream, timeout=2 * APP_TIMEOUT)
-        archive.unlink()
+        private_write(PRIVATE / "saved-parts.json", json.dumps(restore_environment(storage / "environment", pointer)))
         print(t("setup.restored"), pointer["saved_at"])
         nodes = sorted(item.name for item in (envdir / "ComfyUI/custom_nodes").glob("*")
                        if item.is_dir() and item.name != "__pycache__")

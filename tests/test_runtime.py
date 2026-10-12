@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tarfile
 
@@ -2390,3 +2391,216 @@ def test_notebook_cells_for_setup_download_and_status_are_as_a_user_needs_them()
         text = "\n".join(cell["source"] for cell in build_notebook.build(language)["cells"] if "write_text(" not in cell["source"])
         for phrase in ("従来", "これまで", "as before", "used to"):
             assert phrase not in text, phrase
+
+
+@pytest.fixture
+def saving(storage, monkeypatch):
+    """An environment with ComfyUI, two custom nodes and user data, ready to be saved to the stand-in Drive."""
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "fcntl", SimpleNamespace(flock=lambda *args: None, LOCK_EX=0))
+    monkeypatch.setattr(runtime, "run", lambda args, **kwargs: "package==1.0\n" if "freeze" in map(str, args) else None)
+    comfy = runtime.BASE / "environment/ComfyUI"
+    files = {"main.py": "comfyui", ".git/HEAD": "ref: refs/heads/master", "custom_nodes/websocket_image_save.py": "shipped",
+             "custom_nodes/NodeA/node.py": "node a", "custom_nodes/NodeA/.git/HEAD": "a", "custom_nodes/NodeB/__init__.py": "node b",
+             "user/default/workflows/first.json": "{}", "user/default/comfy.settings.json": "{}",
+             "models/checkpoints/big.safetensors": "not saved here", "output/image.png": "not saved here"}
+    for name, content in files.items():
+        (comfy / name).parent.mkdir(parents=True, exist_ok=True)
+        (comfy / name).write_text(content)
+    (comfy / ".git/refs/tags").mkdir(parents=True)  # Empty, and git needs it.
+    (runtime.BASE / "environment/runtime.json").write_text("{}")
+    config = {**storage, "python": "3.12"}
+    drive = runtime.drive_root(config) / "environment"
+
+    def members(component):
+        save = json.loads((drive / "latest.json").read_text())
+        with tarfile.open(drive / "parts" / save["parts"][component]["file"]) as archive:
+            return sorted(archive.getnames())
+
+    def sent():
+        return json.loads((runtime.PRIVATE / "checkpoint-status.json").read_text())["sent"]
+
+    return SimpleNamespace(config=config, comfy=comfy, drive=drive, members=members, sent=sent,
+                           latest=lambda: json.loads((drive / "latest.json").read_text()))
+
+
+def test_environment_is_saved_in_parts_each_holding_only_its_own_files(saving):
+    assert runtime.checkpoint(saving.config) is True
+    save = saving.latest()
+    assert set(save["parts"]) == {"core", "user", "state", "node/NodeA", "node/NodeB"} and save["format"] == 2
+    assert saving.sent() == sorted(save["parts"])
+    # Each part is on Drive under the hash of its content.
+    for part in save["parts"].values():
+        assert runtime.file_hash(saving.drive / "parts" / part["file"]) == part["sha256"] == part["file"][:64]
+    assert saving.members("core") == ["ComfyUI", "ComfyUI/.git", "ComfyUI/.git/HEAD", "ComfyUI/.git/refs", "ComfyUI/.git/refs/tags",
+                                      "ComfyUI/custom_nodes", "ComfyUI/custom_nodes/websocket_image_save.py", "ComfyUI/main.py"]
+    assert saving.members("node/NodeA") == ["ComfyUI/custom_nodes/NodeA", "ComfyUI/custom_nodes/NodeA/.git",
+                                            "ComfyUI/custom_nodes/NodeA/.git/HEAD", "ComfyUI/custom_nodes/NodeA/node.py"]
+    assert saving.members("user") == ["ComfyUI/user", "ComfyUI/user/default", "ComfyUI/user/default/comfy.settings.json",
+                                      "ComfyUI/user/default/workflows", "ComfyUI/user/default/workflows/first.json"]
+    assert saving.members("state") == ["requirements.lock.txt", "runtime.json"]
+    # Models and outputs are in none of them.
+    assert not any("models" in name or "output" in name for part in save["parts"] for name in saving.members(part))
+
+
+def test_a_save_sends_only_the_parts_that_changed(saving):
+    runtime.checkpoint(saving.config)
+    first = saving.latest()
+    assert runtime.checkpoint(saving.config) is False and runtime.checkpoint(saving.config, force=True) is False
+    assert len(list((saving.drive / "generations").iterdir())) == 1  # Nothing changed: no new save.
+    # Saving a workflow sends the user's data and nothing else.
+    (saving.comfy / "user/default/workflows/second.json").write_text('{"nodes": []}')
+    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["user"]
+    second = saving.latest()
+    assert {name for name in second["parts"] if second["parts"][name] != first["parts"][name]} == {"user"}
+    assert "ComfyUI/user/default/workflows/second.json" in saving.members("user")
+    # Updating one custom node sends that node.
+    (saving.comfy / "custom_nodes/NodeA/node.py").write_text("node a, updated")
+    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["node/NodeA"]
+    # Installing packages changes the list kept beside ComfyUI.
+    runtime.run = lambda args, **kwargs: "package==1.0\nextra==2.0\n" if "freeze" in map(str, args) else None
+    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["state"]
+    # A removed custom node is no longer part of the save, and nothing needs sending for that.
+    shutil.rmtree(saving.comfy / "custom_nodes/NodeB")
+    assert runtime.checkpoint(saving.config) is True and saving.sent() == []
+    assert "node/NodeB" not in saving.latest()["parts"]
+    # A part Drive has lost is sent again when a save is asked for outright.
+    lost = saving.drive / "parts" / saving.latest()["parts"]["core"]["file"]
+    lost.unlink()
+    assert runtime.checkpoint(saving.config) is False and not lost.exists()
+    assert runtime.checkpoint(saving.config, force=True) is True and saving.sent() == ["core"]
+    assert (saving.drive / "parts" / saving.latest()["parts"]["core"]["file"]).exists()
+    # The same files packed twice give the same archive, and so the same name on Drive.
+    packed = [io.BytesIO(), io.BytesIO()]
+    for sink in packed:
+        runtime.app_tree_action("archive", ["node/NodeA"], None, sink)
+    assert packed[0].getvalue() == packed[1].getvalue() and len(packed[0].getvalue()) > 0
+
+
+def test_three_saves_are_kept_and_parts_no_save_needs_are_removed(saving):
+    (saving.drive).mkdir(parents=True, exist_ok=True)
+    (saving.drive / "my-notes.txt").write_text("not the notebook's file")
+    for index in range(5):
+        (saving.comfy / "user/default/workflows/first.json").write_text(json.dumps({"revision": index}))
+        assert runtime.checkpoint(saving.config) is True
+        # Two saves in one second would share a name; in use they are minutes apart.
+        newest = max((saving.drive / "generations").iterdir(), key=lambda item: item.name)
+        newest.rename(newest.with_name(f"2026010{index + 1}T000000Z-{newest.name[17:]}"))
+        runtime.discard_old_saves(saving.drive)
+    saves = [json.loads(item.read_text()) for item in (saving.drive / "generations").iterdir()]
+    assert len(saves) == 3 and saving.latest() in saves
+    needed = {part["file"] for save in saves for part in save["parts"].values()}
+    assert {item.name for item in (saving.drive / "parts").iterdir()} == needed
+    assert len(needed) == 4 + 3  # ComfyUI, two nodes and the package list once; the user's data three times.
+    assert (saving.drive / "my-notes.txt").exists()
+    # A list that cannot be read: nothing it might need is deleted.
+    (saving.drive / "parts" / ("0" * 64 + ".tar.gz")).write_bytes(b"orphan")
+    newest = max((saving.drive / "generations").iterdir(), key=lambda item: item.name)
+    kept = newest.read_text()
+    newest.write_text("{broken")
+    runtime.discard_old_saves(saving.drive)
+    assert (saving.drive / "parts" / ("0" * 64 + ".tar.gz")).exists()
+    newest.write_text(kept)
+    runtime.discard_old_saves(saving.drive)
+    assert not (saving.drive / "parts" / ("0" * 64 + ".tar.gz")).exists()
+
+
+def test_saved_parts_come_back_as_the_environment_and_are_not_sent_again(saving):
+    runtime.checkpoint(saving.config)
+    save = saving.latest()
+    before = {path.relative_to(saving.comfy).as_posix(): path.read_text() for path in saving.comfy.rglob("*")
+              if path.is_file() and not {"models", "output"} & set(path.relative_to(saving.comfy).parts)}
+    shutil.rmtree(runtime.BASE / "environment")  # A new runtime.
+    (runtime.BASE / "environment").mkdir()
+    (runtime.PRIVATE / "saved-parts.json").unlink()
+    remembered = runtime.restore_environment(saving.drive, save)
+    after = {path.relative_to(saving.comfy).as_posix(): path.read_text() for path in saving.comfy.rglob("*") if path.is_file()}
+    assert after == before and (saving.comfy / ".git/refs/tags").is_dir()
+    assert not (runtime.PRIVATE / "restore.tar.gz").exists()
+    assert set(remembered) == set(save["parts"]) and all(remembered[name]["file"] == save["parts"][name]["file"] for name in remembered)
+    runtime.private_write(runtime.PRIVATE / "saved-parts.json", json.dumps(remembered))
+    assert runtime.checkpoint(saving.config, force=True) is False  # Drive already has all of it.
+    (saving.comfy / "user/default/workflows/first.json").write_text('{"edited": true}')
+    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["user"]
+
+
+def test_restore_refuses_parts_that_are_not_what_the_save_lists(saving):
+    runtime.checkpoint(saving.config)
+    save = saving.latest()
+    shutil.rmtree(runtime.BASE / "environment")
+    (runtime.BASE / "environment").mkdir()
+    for file, digest in (("../latest.json", "0" * 64), ("0" * 64 + ".tar.gz", "1" * 64), ("part.tar.gz", "part")):
+        forged = json.loads(json.dumps(save))
+        forged["parts"]["user"] = {"file": file, "sha256": digest}
+        with pytest.raises(RuntimeError, match=re.escape(runtime.t("setup.invalid_archive_name"))):
+            runtime.restore_environment(saving.drive, forged)
+        assert list((runtime.BASE / "environment").iterdir()) == []  # Checked before anything is unpacked.
+    part = saving.drive / "parts" / save["parts"]["user"]["file"]
+    part.write_bytes(part.read_bytes() + b"tampered")
+    with pytest.raises(RuntimeError, match=re.escape(runtime.t("setup.archive_sha256_mismatch"))):
+        runtime.restore_environment(saving.drive, save)
+    assert not (saving.comfy / "user").exists()
+
+
+def test_environment_saved_as_one_archive_is_restored_and_then_saved_in_parts(saving):
+    # A save made before parts existed: one archive of everything, and a pointer to it.
+    whole = saving.drive / "20260101T000000Z-0123456789ab.tar.gz"
+    saving.drive.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(whole, "w:gz") as archive:
+        for child in sorted((runtime.BASE / "environment").iterdir()):
+            archive.add(child, arcname=child.name, filter=runtime.archive_filter)
+    pointer = {"archive": whole.name, "sha256": runtime.file_hash(whole), "python": "3.12", "saved_at": "2026-01-01T00:00:00Z"}
+    (saving.drive / "latest.json").write_text(json.dumps(pointer))
+    shutil.rmtree(runtime.BASE / "environment")
+    (runtime.BASE / "environment").mkdir()
+    assert runtime.restore_environment(saving.drive, pointer) == {}
+    assert (saving.comfy / "custom_nodes/NodeA/node.py").read_text() == "node a" and (saving.comfy / ".git/refs/tags").is_dir()
+    assert not (saving.comfy / "models").exists()
+    # The next save is in parts; the old archive stays as an older save until three newer ones exist.
+    assert runtime.checkpoint(saving.config, force=True) is True
+    assert set(saving.latest()["parts"]) == {"core", "user", "state", "node/NodeA", "node/NodeB"} and whole.exists()
+    for index in range(2):
+        (saving.comfy / "user/default/workflows/first.json").write_text(json.dumps({"revision": index}))
+        runtime.checkpoint(saving.config)
+        newest = max((saving.drive / "generations").iterdir(), key=lambda item: item.name)
+        newest.rename(newest.with_name(f"2026020{index + 1}T000000Z-{newest.name[17:]}"))
+    runtime.discard_old_saves(saving.drive)
+    assert not whole.exists() and len(list((saving.drive / "generations").iterdir())) == 3
+
+
+def test_save_made_while_files_change_is_not_recorded(saving, monkeypatch):
+    runtime.checkpoint(saving.config)
+    first = saving.latest()
+    (saving.comfy / "custom_nodes/NodeA/node.py").write_text("being installed")
+    packed = runtime.app_action
+
+    def install_continues(action, *args, **kwargs):
+        result = packed(action, *args, **kwargs)
+        if action == "archive":
+            (saving.comfy / "custom_nodes/NodeA/more.py").write_text("arrived while packing")
+        return result
+    monkeypatch.setattr(runtime, "app_action", install_continues)
+    with pytest.raises(RuntimeError, match=re.escape(runtime.t("environment.busy"))):
+        runtime.checkpoint(saving.config)
+    assert saving.latest() == first  # Drive still points to the last complete save.
+    monkeypatch.setattr(runtime, "app_action", packed)
+    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["node/NodeA"]
+    assert "ComfyUI/custom_nodes/NodeA/more.py" in saving.members("node/NodeA")
+
+
+@pytest.mark.parametrize("parts,component", [
+    (("runtime.json",), "state"), (("requirements.lock.txt",), "state"),
+    (("ComfyUI", "main.py"), "core"), (("ComfyUI", ".git", "objects", "pack", "x.pack"), "core"),
+    (("ComfyUI", "custom_nodes", "websocket_image_save.py"), "core"),
+    (("ComfyUI", "custom_nodes", "ComfyUI-Manager", "__init__.py"), "node/ComfyUI-Manager"),
+    (("ComfyUI", "custom_nodes", ".disabled", "Old", "node.py"), "node/.disabled"),
+    (("ComfyUI", "user", "default", "workflows", "a.json"), "user"), (("ComfyUI", "user", "comfyui.db"), "user"),
+])
+def test_each_file_belongs_to_one_part(parts, component):
+    assert runtime.component_of(parts) == component
+
+
+@pytest.mark.parametrize("component", ["node/", "node/..", "node/a/b", "nodes", "", "user/../core"])
+def test_only_known_parts_can_be_packed(saving, component):
+    with pytest.raises(ValueError):
+        runtime.app_tree_action("archive", [component], None, io.BytesIO())
