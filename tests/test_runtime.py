@@ -302,7 +302,7 @@ def test_proxy_opens_root_page_when_followed_from_another_site():
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
                     signed_in(client, server)
                     # A link in Colab's output or a bookmark opened from another page.
-                    link = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+                    link = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
                     async with client.get(server.make_url("/"), headers=link) as res:
                         assert res.status == 200 and res.url.path_qs == "/"
                     for method, route in (("GET", "/api/manager/reboot"), ("POST", "/")):
@@ -1072,10 +1072,10 @@ def test_update_moves_comfyui_to_the_requested_version_and_saves_it(updatable, c
     # What was installed before is on record before anything changes, for the way back.
     assert fake.files["environment/requirements.lock.txt"] == fake.BASE_PACKAGES
     assert not (runtime.PRIVATE / "update-incomplete.json").exists()
-    assert "ComfyUIを v0.39.0 から v0.39.2 へ更新し、Driveへ保存しました" in capsys.readouterr().out
+    assert runtime.t("update.done", previous="v0.39.0", version="v0.39.2") in capsys.readouterr().out
     fake.calls.clear()
     assert runtime.update_comfyui(config, "v0.39.2") is False  # Nothing to do, nothing touched.
-    assert fake.saves == 1 and "git checkout" not in fake.calls and "ComfyUIは既に v0.39.2 です" in capsys.readouterr().out
+    assert fake.saves == 1 and "git checkout" not in fake.calls and runtime.t("update.already", version="v0.39.2") in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("ref,error", [("--upload-pack=x", "refが不正"), ("a b", "refが不正"),
@@ -1096,7 +1096,7 @@ def test_update_needs_comfyui_stopped_and_drive_connected(updatable, monkeypatch
         runtime.update_comfyui(config, "v0.39.2")
     (runtime.PRIVATE / "processes.json").unlink()
     monkeypatch.setattr(runtime, "DRIVE_MOUNT", runtime.PRIVATE / "unmounted")
-    with pytest.raises(RuntimeError, match="Driveがマウントされていません"):
+    with pytest.raises(RuntimeError, match=re.escape(runtime.t("drive.not_mounted"))):
         runtime.update_comfyui(config, "v0.39.2")
     assert fake.calls == []
 
@@ -1309,7 +1309,7 @@ def test_pairing_code_lets_one_browser_in_once_and_runs_out(private, monkeypatch
                     assert (await enter(second, runtime.new_pairing_code()))[0] == 303
         assert reached == ["/"]  # Only the paired browser's page load got through.
     asyncio.run(scenario())
-    assert "別のサイトからの要求を拒否しました: Origin https://evil.example" in capsys.readouterr().out
+    assert "別のサイトからの要求を拒否しました" not in capsys.readouterr().out  # Strangers cannot fill the log.
 
 
 def test_proxy_without_a_session_secret_lets_nobody_in(private):
@@ -1370,7 +1370,8 @@ def test_proxy_behind_colab_forwarding_needs_no_code_but_keeps_other_sites_out(c
             async with TestServer(proxy) as server:
                 async with ClientSession() as client:
                     # Colab only forwards the owner's browser, so there is no code and no cookie.
-                    link = {"Accept": "text/html", "Sec-Fetch-Site": "cross-site", "Cookie": "colab-auth=google-sign-in"}
+                    link = {"Accept": "text/html", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate",
+                            "Sec-Fetch-Dest": "document", "Cookie": "colab-auth=google-sign-in"}
                     async with client.get(server.make_url("/"), headers=link, allow_redirects=False) as res:
                         assert res.status == 200 and await res.text() == "ComfyUI"
                     # The page's own requests carry the forwarded address as their origin.
@@ -1685,8 +1686,8 @@ def test_access_start_runs_the_named_tunnel_without_exposing_its_token(tmp_path,
     assert started.spawned == []
     runtime.start_with_access(config, "comfy.example.com", ACCESS["aud"], " " + token + "\n")
     output = capsys.readouterr().out
-    # The team is the one the hostname itself sends visitors to, and it is shown.
-    assert "チームドメイン: myteam.cloudflareaccess.com\n" in output
+    # The team the hostname sends visitors to is found and used without being shown.
+    assert "cloudflareaccess.com" not in output
     saved = (tmp_path / "session.json").read_text()
     assert json.loads(saved) == {"drive_folder": "ComfyUI-Colab", "mode": "access", "access": ACCESS}
     assert [args[-1] for args in started.spawned] == ["proxy", "supervise", "run"]
@@ -1750,7 +1751,7 @@ def test_access_team_comes_from_the_sign_in_the_hostname_redirects_to(tmp_path, 
     runtime.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
     saved = json.loads((tmp_path / "session.json").read_text())
     assert saved["access"] == {"hostname": "comfy.example.com", "aud": ACCESS["aud"], "team": "another-team.cloudflareaccess.com"}
-    assert "チームドメイン: another-team.cloudflareaccess.com" in capsys.readouterr().out
+    assert "cloudflareaccess.com" not in capsys.readouterr().out
     assert [args[-1] for args in started.spawned] == ["proxy", "supervise", "run"]
     # Running: a second start is refused before anything is asked or changed.
     asked.clear()
@@ -1887,7 +1888,7 @@ def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private
                         # The link to the repository opens outside the page and tells that page nothing.
                         assert f'const repository = "{runtime.REPOSITORY_URL}";' in script and "__REPOSITORY__" not in script
                         assert runtime.REPOSITORY_URL.startswith("https://github.com/") and 'rel = "noopener noreferrer"' in script
-                        assert json.dumps("GitHubでこのノートブックを見る") in script
+                        assert json.dumps(runtime.t("menu.repository")) in script
                 async with ClientSession() as stranger:
                     for route in (runtime.STOP_SCRIPT_PATH, runtime.STOP_PATH):
                         async with stranger.get(server.make_url(route)) as res:
@@ -2003,3 +2004,104 @@ def test_starting_watches_for_the_stop_button_and_stopping_ends_the_watch(tmp_pa
             break
         threading.Event().wait(0.1)
     assert threading.active_count() <= before
+
+
+@pytest.mark.parametrize("config", [{"mode": "tunnel", "cookie_secret": "test-cookie-secret"},
+                                    {"mode": "colab", "origins": ["https://8189-abc.prod.colab.dev"]}])
+def test_proxy_takes_only_the_opening_of_the_page_from_other_sites(config, capsys):
+    from aiohttp import web, ClientSession, CookieJar
+    from aiohttp.test_utils import TestServer
+
+    async def scenario():
+        reached = []
+
+        async def backend(request):
+            # A ComfyUI from before it refused cross-site requests itself.
+            reached.append((request.method, request.path, request.headers.get("Sec-Fetch-Site")))
+            return web.Response(text="ComfyUI", content_type="text/html")
+
+        app = web.Application()
+        app.router.add_route("*", "/{path:.*}", backend)
+        async with TestServer(app) as upstream:
+            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            async with TestServer(proxy) as server:
+                async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
+                    signed_in(client, server)
+
+                    async def status(method, route, **fetch):
+                        headers = {"Sec-Fetch-" + name.capitalize(): value for name, value in fetch.items()}
+                        async with client.request(method, server.make_url(route), headers=headers) as res:
+                            return res.status
+
+                    # What a page on another site can make this browser send, with its sign-in attached.
+                    for site in ("cross-site", "same-site"):
+                        assert await status("GET", "/api/manager/reboot", site=site, mode="navigate", dest="document") == 403  # A link.
+                        assert await status("GET", "/api/view?filename=x.png", site=site, mode="no-cors", dest="image") == 403  # An image.
+                        assert await status("GET", "/", site=site, mode="navigate", dest="iframe") == 403  # A frame.
+                        assert await status("GET", "/", site=site, mode="no-cors", dest="script") == 403
+                        assert await status("POST", "/", site=site, mode="navigate", dest="document") == 403  # A form.
+                        assert await status("GET", runtime.STOP_PATH, site=site, mode="cors", dest="empty") == 403
+                    assert reached == []
+                    # Opening the page from a link elsewhere (Colab's output, a sign-in page) is the one thing taken.
+                    for route in ("/", "/?workflow=1", "/index.html"):
+                        assert await status("GET", route, site="cross-site", mode="navigate", dest="document") == 200
+                    assert [entry[2] for entry in reached if entry[1] == "/"] == [None, None]  # ComfyUI is not told to refuse it.
+                    # The page's own requests, an address typed in, and programs that are not browsers.
+                    assert await status("GET", "/api/queue", site="same-origin", mode="cors", dest="empty") == 200
+                    assert await status("POST", "/api/prompt", site="same-origin", mode="cors", dest="empty") == 200
+                    assert await status("GET", "/api/view?filename=x.png", site="none", mode="navigate", dest="document") == 200
+                    assert await status("GET", "/api/view?filename=x.png") == 200
+    asyncio.run(scenario())
+    assert "別のサイトからの要求を拒否しました: GET /api/manager/reboot（Sec-Fetch-Site: cross-site）" in capsys.readouterr().out
+
+
+def test_proxy_keeps_its_sign_in_cookie_and_its_pages_out_of_other_hands(capsys):
+    from aiohttp import web, ClientSession, CookieJar
+    from aiohttp.test_utils import TestServer
+
+    async def scenario():
+        async def backend(request):
+            response = web.Response(text="<html><head></head><body>ComfyUI</body></html>", content_type="text/html")
+            if request.path == "/node":
+                # A custom node answering with cookies of its own choosing.
+                for cookie in ("comfy_colab=replaced; Path=/", runtime.COOKIE + "=replaced; Path=/; Secure",
+                               "CF_Authorization=replaced; Path=/", "node-setting=kept; Path=/"):
+                    response.headers.add("Set-Cookie", cookie)
+                response.headers["Content-Security-Policy"] = "img-src 'self'"
+            if request.path == "/framed-by-comfyui":
+                response.headers["X-Frame-Options"] = "DENY"
+            return response
+
+        app = web.Application()
+        app.router.add_route("*", "/{path:.*}", backend)
+        async with TestServer(app) as upstream:
+            config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
+            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            async with TestServer(proxy) as server:
+                async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
+                    signed_in(client, server)
+                    async with client.get(server.make_url("/node")) as res:
+                        assert res.headers.getall("Set-Cookie") == ["node-setting=kept; Path=/"]
+                        # (A local filtering proxy may merge or rewrite policies, so look for the directive.)
+                        policies = " ; ".join(res.headers.getall("Content-Security-Policy"))
+                        assert "frame-ancestors 'self'" in policies and "img-src 'self'" in policies
+                    # Still signed in: the node did not replace the cookie.
+                    for route in ("/", "/api/queue", "/assets/index-CrctFnrp.js"):
+                        async with client.get(server.make_url(route)) as res:
+                            assert res.status == 200
+                            assert "frame-ancestors 'self'" in " ; ".join(res.headers.getall("Content-Security-Policy"))
+                            assert res.headers["X-Frame-Options"] == "SAMEORIGIN"
+                    async with client.get(server.make_url("/framed-by-comfyui")) as res:
+                        assert res.headers.getall("X-Frame-Options") == ["DENY"]  # ComfyUI's stricter word stands.
+                    # A signed-in visitor's refused requests are noted, but only so many a minute.
+                    for _ in range(50):
+                        async with client.post(server.make_url("/prompt"), headers={"Origin": "https://evil.example"}) as res:
+                            assert res.status == 403
+                async with ClientSession() as stranger:
+                    for _ in range(5):
+                        async with stranger.post(server.make_url(runtime.PAIRING_PATH), data={"code": "1"},
+                                                 headers={"Origin": "https://stranger.example"}) as res:
+                            assert res.status == 403
+    asyncio.run(scenario())
+    log = capsys.readouterr().out
+    assert log.count("Origin https://evil.example") == 30 and "stranger.example" not in log

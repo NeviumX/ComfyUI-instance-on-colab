@@ -1402,12 +1402,49 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
         verified[token] = claims["exp"]
         return True
 
-    def refuse_other_sites(request):
+    noted = [0.0, 0]  # When the current minute of the log began, and the lines written in it.
+
+    def note(message):
+        """A line in proxy.log, but no more of them than a visitor's requests may fill it with."""
+        if time.monotonic() - noted[0] >= 60:
+            noted[:] = [time.monotonic(), 0]
+        noted[1] += 1
+        if noted[1] <= 30:
+            print(message, flush=True)
+
+    def refuse_other_sites(request, quiet=False):
+        """Stop what another site sends through a signed-in browser. quiet: the sender has not
+        signed in, so it could be anyone, and gets no line in the log."""
         origin = request.headers.get("Origin")
         if origin and origin not in {"https://" + request.host, "http://" + request.host} | origins:
-            print(t("proxy.origin_rejected", origin=origin[:200], host=request.host[:200]), flush=True)
+            if not quiet:
+                note(t("proxy.origin_rejected", origin=origin[:200], host=request.host[:200]))
             raise web.HTTPForbidden(text=t("proxy.cross_origin"))
+        # A link, an image or a frame on another site carries no Origin, but the browser says where
+        # it comes from. From elsewhere only opening the page itself is taken, not ComfyUI's addresses:
+        # ComfyUI refuses those itself only in its recent versions.
+        site = request.headers.get("Sec-Fetch-Site", "").lower()
+        if site in ("cross-site", "same-site"):
+            opening = (request.method == "GET" and request.path in ("/", "/index.html")
+                       and request.headers.get("Sec-Fetch-Mode", "").lower() == "navigate"
+                       and request.headers.get("Sec-Fetch-Dest", "").lower() == "document")
+            if not opening:
+                if not quiet:
+                    note(t("proxy.site_rejected", method=request.method[:16], path=request.path[:200], site=site))
+                raise web.HTTPForbidden(text=t("proxy.cross_origin"))
         return origin
+
+    def passed_on(res, keep_length):
+        """ComfyUI's response headers for the browser. A custom node must not replace the cookie
+        that signs the browser in, and no other site may show these pages in a frame."""
+        dropped = hop - {"content-length"} if keep_length else hop
+        headers = [(k, v) for k, v in res.headers.items() if k.lower() not in dropped and not (
+            k.lower() == "set-cookie" and (v.split("=", 1)[0].strip() in {COOKIE, "comfy_colab"}
+                                           or v.lstrip().startswith("CF_")))]
+        headers.append(("Content-Security-Policy", "frame-ancestors 'self'"))
+        if "X-Frame-Options" not in res.headers:
+            headers.append(("X-Frame-Options", "SAMEORIGIN"))
+        return headers
 
     def pairing_page(notice="", status=200):
         page = PAIRING_PAGE.format(path=PAIRING_PATH, notice=html.escape(notice), title=html.escape(t("pairing.title")),
@@ -1422,7 +1459,7 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
         """The one page anyone can reach: it trades the code shown in the notebook for the cookie."""
         if request.method != "POST":
             return pairing_page()
-        refuse_other_sites(request)
+        refuse_other_sites(request, quiet=True)
         length = request.content_length
         if length is None or length > 256:  # Nothing unauthenticated gets to send more.
             raise web.HTTPBadRequest()
@@ -1520,7 +1557,7 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
                             await dest.send_bytes(msg.data)
                         elif msg.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR}:
                             if msg.type == WSMsgType.ERROR:
-                                print(t("proxy.websocket_error"), repr(source.exception()), flush=True)
+                                note(t("proxy.websocket_error") + " " + repr(source.exception()))
                             break
                 tasks = [asyncio.create_task(relay(local, remote)), asyncio.create_task(relay(remote, local))]
                 try:
@@ -1537,11 +1574,9 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
                 page = (page and res.status == 200 and "Content-Encoding" not in res.headers
                         and res.headers.get("Content-Type", "").lower().startswith("text/html"))
                 if page:
-                    response = web.Response(body=with_stop_button(await res.read()), headers=[
-                        (k, v) for k, v in res.headers.items() if k.lower() not in hop])
+                    response = web.Response(body=with_stop_button(await res.read()), headers=passed_on(res, False))
                 else:
-                    response = web.StreamResponse(status=res.status, headers=[
-                        (k, v) for k, v in res.headers.items() if k.lower() not in hop - {"content-length"}])
+                    response = web.StreamResponse(status=res.status, headers=passed_on(res, True))
                 response.headers["Referrer-Policy"] = "no-referrer"
                 complete = request.method == "GET" and res.status == 200
                 response.headers["Cache-Control"] = ("private, max-age=31536000, immutable"
@@ -1899,7 +1934,6 @@ def start_with_access(config, hostname, audience, tunnel_token):
     if (PRIVATE / "processes.json").exists():
         raise RuntimeError(t("start.already_running"))
     access["team"] = access_team_domain(access["hostname"])
-    print(t("access.team", team=access["team"]))
     start(config, "access", access=access, tunnel_token=token)
 
 

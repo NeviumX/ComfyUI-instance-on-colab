@@ -8,7 +8,7 @@
         "",
         "**使い方:** ランタイムのタイプでGPUを選び、**1 → 2 → 3 → 6-1〜6-3 のいずれか** の順に実行します。入力欄やチェックボックスを設定してから、そのセルを実行してください。チェックボックスのある操作は、ONにして実行したときだけ行われます。",
         "",
-        "**前提:** Googleドライブへの接続はDrive全体への許可になります。個人データを置かない専用のGoogleアカウントを使い、信頼できるカスタムノードとモデルだけを導入してください（末尾の「セキュリティについて」）。[Colabの利用条件](https://research.google.com/colaboratory/faq.html) に従い、有料プランでの利用を前提とします。"
+        "**前提:** Googleドライブへの接続はドライブ全体への許可になります。個人データを置かない専用のGoogleアカウントを使い、信頼できるカスタムノードとモデルだけを導入してください（末尾の「セキュリティについて」）。[Colabの利用条件](https://research.google.com/colaboratory/faq.html) に従い、有料プランでの利用を前提とします。"
       ],
       "EN": [
         "# ComfyUI instance on Colab",
@@ -724,6 +724,10 @@
       "access_required": {
         "JP": "Cloudflare Accessの認証を確認できません。公開ホスト名のURLから接続してください。ログイン後もこの表示が出る場合は、シークレット CF_ACCESS_AUD のAUDタグを確認してください。",
         "EN": "The Cloudflare Access sign-in could not be verified. Connect through the URL of the public hostname. If this appears after signing in, check the AUD tag in the secret CF_ACCESS_AUD."
+      },
+      "site_rejected": {
+        "JP": "別のサイトからの要求を拒否しました: {method} {path}（Sec-Fetch-Site: {site}）",
+        "EN": "Refused a request from another site: {method} {path} (Sec-Fetch-Site: {site})"
       }
     },
     "diagnosis": {
@@ -934,7 +938,7 @@
         "EN": "Undoing the update that was left unfinished."
       },
       "done": {
-        "JP": "ComfyUIを {previous} から {version} へ更新し、Goolgeドライブへ保存しました。6-1〜6-3のいずれかを実行して起動してください。",
+        "JP": "ComfyUIを {previous} から {version} へ更新し、Googleドライブへ保存しました。6-1〜6-3のいずれかを実行して起動してください。",
         "EN": "Updated ComfyUI from {previous} to {version} and saved it to Drive. Run one of cells 6-1 to 6-3 to start it."
       }
     },
@@ -992,10 +996,6 @@
       "note": {
         "JP": "開くとCloudflare Accessのログイン画面が出ます。許可したアカウントでログインした端末だけが接続できます。停止するとこのURLは応答しなくなります。",
         "EN": "Opening it shows the Cloudflare Access sign-in. Only a device signed in with an account you allowed can connect. The URL stops answering when you stop."
-      },
-      "team": {
-        "JP": "このホスト名を保護しているAccessのチームドメイン: {team}",
-        "EN": "Access team domain protecting this hostname: {team}"
       },
       "wrong_target": {
         "JP": "トンネルの公開ホスト名の転送先が http://127.0.0.1:8189 だけになっていません（現在の設定: {services}）。Cloudflareのトンネルの設定で、サービスの種類をHTTP、URLを 127.0.0.1:8189 にしてから実行し直してください。接続を中止しました。",
