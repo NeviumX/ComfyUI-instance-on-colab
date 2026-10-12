@@ -13,14 +13,14 @@ Google ColaboratoryのGPUでComfyUIを実行し、ブラウザーやComfy Deskto
 ## 必要なもの
 
 - GPUを利用できるGoogle Colab。有料プランと計算ユニット残高を前提とします。
-- モデルと環境を保存できるGoogleドライブ、およびモデル全体をコピーできるColabの空き容量。
+- モデルと環境を保存できるGoogleドライブ、および使うモデルを読み込めるColabの空き容量。
 - Remote Connectionを使う場合は [Comfy Desktop](https://github.com/Comfy-Org/Comfy-Desktop)。使わない場合は通常のブラウザーだけで利用できます。
 
 ## 使い方
 
 1. 上の **Open in Colab** をクリックします（日本語版のノートブックが開きます。英語版は [英語のREADME](README.md) のボタンから開けます）。[ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb) または [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb) をダウンロードして、[Google Colab](https://colab.research.google.com/) へアップロードすることもできます。内容は同じで、説明文とメッセージの言語だけが異なります。
 2. GPUランタイムを選び、1〜3のセル（設定・コードの展開・セットアップ）を実行します。表示されるGoogleの画面でドライブへの接続を許可します。各セルは入力欄とチェックボックスで操作し、チェックボックスのある操作はONにして実行したときだけ行われます。
-3. Googleドライブの `ComfyUI-Colab/models/` にある種類別のフォルダーへモデルを置いて5を実行するか、Hugging Face・CivitaiのURLを4へ貼り付けます。
+3. Googleドライブの `ComfyUI-Colab/models/` にある種類別のフォルダーへモデルを置いて5を実行するか、Hugging Face・CivitaiのURLを4へ貼り付けます。4で `RUNTIME_ONLY` をONにすると、Googleドライブへ保存せず、そのランタイムだけで使えます。
 4. 6-1〜6-3のいずれかを実行してComfyUIを起動し、表示されたURLを開きます（下の「接続方法」）。
 5. 終了するときは、PCへの出力の取得を確認してから10を実行し、完了を待ってからランタイムを削除します。
 

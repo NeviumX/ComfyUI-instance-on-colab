@@ -13,14 +13,14 @@ A notebook that runs ComfyUI on a Google Colaboratory GPU, for use from your bro
 ## Requirements
 
 - Google Colab with a GPU. A paid plan and a compute unit balance are assumed.
-- Google Drive with room for your models and the environment, and enough free space on Colab to hold a copy of all your models.
+- Google Drive with room for your models and the environment, and free space on Colab for the models you use.
 - [Comfy Desktop](https://github.com/Comfy-Org/Comfy-Desktop), if you want to use Remote Connection. A regular browser is enough otherwise.
 
 ## How to use
 
 1. Click **Open in Colab** above (it opens the English notebook; the button in the [Japanese README](README_JP.md) opens the Japanese one). You can also download [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb) or [ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb) and upload it to [Google Colab](https://colab.research.google.com/). The two are the same except for the language of the text and messages.
 2. Choose a GPU runtime and run cells 1 to 3 (settings, unpacking the code, setup). Allow access to Drive in the Google dialog that appears. Each cell is operated through its fields and checkboxes; an action with a checkbox only happens when you run the cell with the box checked.
-3. Put your models into the folder for their type under `ComfyUI-Colab/models/` on Drive and run cell 5, or paste a Hugging Face or Civitai URL into cell 4.
+3. Put your models into the folder for their type under `ComfyUI-Colab/models/` on Drive and run cell 5, or paste a Hugging Face or Civitai URL into cell 4. Check `RUNTIME_ONLY` there to use a model on this runtime only, without saving it to Drive.
 4. Run one of cells 6-1 to 6-3 to start ComfyUI, and open the URL it shows (see "Ways to connect" below).
 5. When you finish, make sure your outputs are on your PC, run cell 10, and wait for it to finish before you delete the runtime.
 

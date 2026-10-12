@@ -305,3 +305,58 @@ with tempfile.TemporaryDirectory(prefix="comfy-colab-check-") as temporary:
     assert kept() and (repo / "main.py").read_text() == "version 1\n"
     assert runtime.update_comfyui(config, "v1") is False
     print("PASS: a restored environment can be moved to another version")
+
+    # Reading Drive's models in place: a read-only view of that one folder for the application user.
+    import shutil
+    if not shutil.which("bindfs"):
+        print("SKIP: bindfs is not installed, so reading Drive's models in place was not checked")
+    else:
+        runtime.run = actual_run
+        runtime.DRIVE_MODELS = root / "drive-models"
+        try:
+            direct = {**config, "model_access": "direct"}
+            (models / "loras").mkdir()
+            (models / "loras/style.safetensors").write_bytes(b"style lora on Drive")
+            (models / "loras/placeholder").write_bytes(b"")
+            personal = runtime.DRIVE_MOUNT / "MyDrive/personal.txt"
+            personal.write_text("not a model")
+            for path in (models / "loras", models / "loras/style.safetensors", personal):
+                path.chmod(0o700 if path.is_dir() else 0o600)
+            local_copy = cached.read_bytes()
+            assert runtime.sync_models(direct) == 1  # The other Drive models are already here as files of this runtime.
+            link = runtime.BASE / "models/loras/style.safetensors"
+            assert link.is_symlink() and cached.read_bytes() == local_copy and not cached.is_symlink()
+            assert not (runtime.BASE / "models/loras/placeholder").exists()
+            seen = as_app("import sys; print(open(sys.argv[1], 'rb').read().decode())", link)
+            assert seen.stdout.strip() == "style lora on Drive", seen
+            for attempt in (f"open({str(link)!r}, 'ab').write(b'x')", f"import os; os.remove({str(runtime.DRIVE_MODELS / 'loras/style.safetensors')!r})",
+                            f"open({str(runtime.DRIVE_MODELS / 'new.safetensors')!r}, 'wb')",
+                            f"open({str(models / 'loras/style.safetensors')!r}, 'rb')", f"open({str(personal)!r}, 'rb')",
+                            f"import os; os.listdir({str(runtime.DRIVE_MODELS / '..' / 'private')!r})"):
+                refused = as_app(attempt)
+                assert refused.returncode and ("Error" in refused.stderr), (attempt, refused)
+            assert (models / "loras/style.safetensors").read_bytes() == b"style lora on Drive"
+            print("PASS: Drive's models are read in place through a read-only view of that folder alone")
+
+            # The links are not models of this runtime: saving does not send them back to Drive.
+            before_save = sorted(p.name for p in (models / "loras").iterdir())
+            runtime.save_new_cache_models(direct, force=True)
+            assert sorted(p.name for p in (models / "loras").iterdir()) == before_save
+            # Added to Drive: linked on refresh. Removed from Drive: its link goes.
+            (models / "loras/second.safetensors").write_bytes(b"second lora")
+            assert runtime.sync_models(direct) == 1 and (runtime.BASE / "models/loras/second.safetensors").is_symlink()
+            (models / "loras/style.safetensors").unlink()
+            time.sleep(1.5)  # The view remembers a file's existence for a second.
+            assert runtime.sync_models(direct) == 0 and not os.path.lexists(link)
+            # ComfyUI's own files arriving after an update do not write through a link into the view.
+            subprocess.run(runtime.app_command(["sh", "-c", f"rm {repo / 'models'} && mkdir -p {repo / 'models/loras'}"
+                                                f" && printf shipped > {repo / 'models/loras/second.safetensors'}"]), check=True)
+            runtime.app_action("prepare")
+            assert (models / "loras/second.safetensors").read_bytes() == b"second lora" and (repo / "models").is_symlink()
+            print("PASS: links follow what is on Drive and are never saved or written through")
+
+        finally:
+            # Whatever happened above: the temporary folder is deleted next, and not through a mounted view.
+            runtime.hide_drive_models()
+        assert not runtime.drive_models_shown() and not list(runtime.DRIVE_MODELS.iterdir())
+        print("PASS: the view is taken away before Drive is unmounted")

@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -2105,3 +2106,275 @@ def test_proxy_keeps_its_sign_in_cookie_and_its_pages_out_of_other_hands(capsys)
     asyncio.run(scenario())
     log = capsys.readouterr().out
     assert log.count("Origin https://evil.example") == 30 and "stranger.example" not in log
+
+
+@pytest.fixture
+def view_commands(storage, monkeypatch):
+    """Record what preparing the read-only view of Drive's models runs, without running it."""
+    state = {"mounted": False, "installed": False, "commands": [], "fail": None}
+
+    def run(args, **kwargs):
+        args = list(map(str, args))
+        state["commands"].append((args, bool(kwargs.get("app"))))
+        if state["fail"] and state["fail"] in args:
+            raise RuntimeError("fuse: failed to open /dev/fuse: Permission denied")
+        if args[:2] == ["apt-get", "install"]:
+            state["installed"] = True
+        if args[0] == "bindfs":
+            state["mounted"] = True
+
+    def unmount(args, **kwargs):
+        state["commands"].append((list(map(str, args)), False))
+        state["mounted"] = False
+
+    monkeypatch.setattr(runtime, "DRIVE_MODELS", storage_root(storage) / "drive-models")
+    monkeypatch.setattr(runtime, "run", run)
+    monkeypatch.setattr(runtime.subprocess, "run", unmount)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/bindfs" if state["installed"] else None)
+    monkeypatch.setattr(runtime.os.path, "ismount", lambda path: state["mounted"])
+    monkeypatch.setattr(runtime.os, "geteuid", lambda: runtime.DRIVE_MODELS.stat().st_uid, raising=False)
+    monkeypatch.setattr(runtime, "APT_INDEX_REFRESHED", [])
+    return state
+
+
+def storage_root(storage):
+    return runtime.PRIVATE.parent
+
+
+def test_direct_access_shows_the_application_only_the_models_folder_read_only(storage, view_commands):
+    runtime.show_drive_models(storage)
+    commands = view_commands["commands"]
+    source = str(runtime.drive_root(storage) / "models")
+    # bindfs is installed without the FUSE tools it merely recommends: Drive is mounted with the ones in place.
+    assert commands[:2] == [(["apt-get", "update", "-qq"], False),
+                            (["apt-get", "install", "-y", "-qq", "--no-install-recommends", "bindfs"], False)]
+    mount, as_root = commands[2]
+    assert not as_root and mount[0] == "bindfs" and mount[-2:] == [source, str(runtime.DRIVE_MODELS)]
+    assert "-r" in mount and "--force-user=comfy" in mount and "--perms=a=rX" in mount and mount[mount.index("-o") + 1] == "allow_other"
+    # Not Drive, not the folder above the models: only that one folder.
+    assert Path(source).name == "models" and Path(source).parent.name == "ComfyUI-Colab"
+    # The application user is made to look in before anything relies on it.
+    assert commands[3] == (["ls", str(runtime.DRIVE_MODELS)], True)
+    assert runtime.DRIVE_MODELS.parent != runtime.BASE and runtime.BASE not in runtime.DRIVE_MODELS.parents
+    commands.clear()
+    runtime.show_drive_models(storage)  # Already there: nothing is run again.
+    assert commands == []
+    runtime.hide_drive_models()
+    assert commands == [(["umount", str(runtime.DRIVE_MODELS)], False)] and not view_commands["mounted"]
+
+
+@pytest.mark.parametrize("failing", ["bindfs", "ls"])
+def test_direct_access_that_cannot_be_prepared_says_how_to_copy_instead(storage, view_commands, failing):
+    view_commands["fail"] = failing
+    with pytest.raises(RuntimeError) as failure:
+        runtime.show_drive_models(storage)
+    assert "MODEL_ACCESS" in str(failure.value) and "copy" in str(failure.value) and "Permission denied" in str(failure.value)
+    assert not view_commands["mounted"]  # Nothing half-mounted is left.
+
+
+def test_direct_access_refuses_a_place_someone_else_prepared(storage, view_commands):
+    runtime.DRIVE_MODELS.mkdir()
+    (runtime.DRIVE_MODELS / "planted").write_text("x")
+    with pytest.raises(RuntimeError, match="MODEL_ACCESS"):
+        runtime.show_drive_models(storage)
+    assert not any(args[0] == "bindfs" for args, _ in view_commands["commands"])
+
+
+def test_models_are_linked_or_copied_as_setup_chose(storage, view_commands, monkeypatch, capsys):
+    asked = []
+    monkeypatch.setattr(runtime, "app_action", lambda action, *args, **kwargs: asked.append((action, *map(str, args))) or b"3")
+    models = runtime.drive_root(storage) / "models"
+    (models / "loras").mkdir()
+    (models / "loras/style.safetensors").write_bytes(b"lora")
+    assert runtime.sync_models({**storage, "model_access": "direct"}) == 3
+    assert asked == [("link-models", str(runtime.DRIVE_MODELS))] and view_commands["mounted"]
+    assert runtime.t("models.linked", linked=3) in capsys.readouterr().out
+    asked.clear()
+    assert runtime.sync_models({**storage, "model_access": "copy"}) == 1  # As before: a copy in the runtime's cache.
+    assert [entry[:2] for entry in asked] == [("put", "models/loras/style.safetensors")]
+    asked.clear()
+    # A runtime set up before the choice existed copies too.
+    assert runtime.sync_models(storage) == 1 and asked[0][0] == "put"
+
+
+def test_links_to_drive_models_follow_drive_and_leave_local_models_alone(storage, tmp_path):
+    view, cache = tmp_path / "view", runtime.BASE / "models"
+    (view / "loras/sdxl").mkdir(parents=True)
+    (view / "loras/sdxl/style.safetensors").write_bytes(b"on drive")
+    (view / "loras/placeholder").write_bytes(b"")
+    (view / "loras/upload.part").write_bytes(b"half")
+    (view / "checkpoints").mkdir()
+    (view / "checkpoints/base.safetensors").write_bytes(b"drive copy")
+    (cache / "checkpoints").mkdir(parents=True)
+    (cache / "checkpoints/base.safetensors").write_bytes(b"downloaded on this runtime")
+    try:
+        (tmp_path / "probe").symlink_to(view)
+    except OSError:
+        pytest.skip("this account may not create symbolic links")
+    sink = io.BytesIO()
+    runtime.app_tree_action("link-models", [str(view)], None, sink)
+    link = cache / "loras/sdxl/style.safetensors"
+    assert sink.getvalue() == b"1" and link.is_symlink() and link.read_bytes() == b"on drive"
+    # Not markers or unfinished uploads, and never in place of a model this runtime has itself.
+    assert not (cache / "loras/placeholder").exists() and not (cache / "loras/upload.part").exists()
+    assert not (cache / "checkpoints/base.safetensors").is_symlink()
+    assert (cache / "checkpoints/base.safetensors").read_bytes() == b"downloaded on this runtime"
+    assert [file.name for file in runtime.regular_files(cache)] == ["base.safetensors"]  # Links are not saved to Drive.
+    # Run again: nothing new. Removed from Drive: the link goes, other links and files stay.
+    (view / "loras/other.safetensors").write_bytes(b"another")
+    sink = io.BytesIO()
+    runtime.app_tree_action("link-models", [str(view)], None, sink)
+    assert sink.getvalue() == b"1"
+    (view / "loras/sdxl/style.safetensors").unlink()
+    sink = io.BytesIO()
+    runtime.app_tree_action("link-models", [str(view)], None, sink)
+    assert sink.getvalue() == b"0" and not os.path.lexists(link) and (cache / "loras/other.safetensors").is_symlink()
+    assert (cache / "checkpoints/base.safetensors").exists()
+
+
+def test_notebook_offers_the_choice_and_releases_the_view_before_unmounting_drive(monkeypatch):
+    settings, setup, stop = notebook_cell("DRIVE_FOLDER_NAME"), notebook_cell("runtime.setup("), notebook_cell("STOP_NOW = False")
+    assert 'MODEL_ACCESS = "direct" #@param ["direct", "copy"]' in settings
+    assert "model_access=MODEL_ACCESS" in setup
+    assert stop.index("runtime.hide_drive_models()") < stop.index("drive.flush_and_unmount()")
+    order = []
+    monkeypatch.setattr(runtime, "hide_drive_models", lambda: order.append("hide"))
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "google.colab", SimpleNamespace(
+        drive=SimpleNamespace(flush_and_unmount=lambda: order.append("unmount")),
+        runtime=SimpleNamespace(unassign=lambda: order.append("unassign"))))
+    runtime.delete_colab_runtime()
+    assert order == ["hide", "unmount", "unassign"]
+
+
+def test_download_progress_is_a_bar_in_the_notebook_and_plain_lines_elsewhere(monkeypatch, capsys):
+    from types import SimpleNamespace
+    megabyte = 1048576
+    monkeypatch.setitem(sys.modules, "tqdm", None)
+    monkeypatch.setitem(sys.modules, "tqdm.auto", None)  # Not installed.
+    plain = runtime.download_progress(200 * megabyte)
+    for _ in range(50):
+        plain.update(4 * megabyte)
+    plain.close()
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 10 and lines[0] == runtime.t("download.progress", done=20, total=200, percent=10)
+    assert lines[-1] == runtime.t("download.progress", done=200, total=200, percent=100)
+    unknown = runtime.download_progress(0)  # The site did not say how large the file is.
+    for _ in range(300):
+        unknown.update(4 * megabyte)
+    assert capsys.readouterr().out.splitlines() == [runtime.t("download.progress_size", done=512), runtime.t("download.progress_size", done=1024)]
+    bars = []
+
+    class Bar:
+        def __init__(self, **options):
+            self.options, self.updates, self.closed = options, [], False
+            bars.append(self)
+
+        def update(self, amount):
+            self.updates.append(amount)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setitem(sys.modules, "tqdm", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "tqdm.auto", SimpleNamespace(tqdm=Bar))
+    bar = runtime.download_progress(200 * megabyte)
+    assert bar is bars[0] and bar.options["total"] == 200 * megabyte and bar.options["unit"] == "B" and bar.options["unit_scale"]
+    assert runtime.download_progress(0).options["total"] is None
+
+
+@pytest.mark.parametrize("failing", [False, True])
+def test_model_download_reports_its_progress_and_always_ends_the_bar(storage, monkeypatch, failing):
+    bars = []
+
+    class Bar:
+        def __init__(self, total):
+            self.total, self.done, self.closed = total, 0, False
+            bars.append(self)
+
+        def update(self, amount):
+            self.done += amount
+
+        def close(self):
+            self.closed = True
+
+    class Response:
+        status_code = 200
+        headers = {"Content-Type": "application/octet-stream", "Content-Length": "9"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def iter_content(self, size):
+            yield b"abc"
+            yield b"def"
+            if failing:
+                raise OSError("connection reset")
+            yield b"ghi"
+
+    monkeypatch.setattr(runtime, "download_progress", Bar)
+    monkeypatch.setattr(runtime, "checked_https_url", lambda url: SimpleNamespaceHost())
+    session = type("Session", (), {"get": lambda self, url, **kwargs: Response()})()
+    target = runtime.PRIVATE / "model.part"
+    if failing:
+        with pytest.raises(OSError):
+            runtime.stream_model(session, "https://huggingface.co/a/b/resolve/main/m.safetensors", target)
+    else:
+        digest, _ = runtime.stream_model(session, "https://huggingface.co/a/b/resolve/main/m.safetensors", target)
+        import hashlib
+        assert digest == hashlib.sha256(b"abcdefghi").hexdigest()
+    assert bars[0].total == 9 and bars[0].done == (6 if failing else 9) and bars[0].closed
+
+
+class SimpleNamespaceHost:
+    hostname = "huggingface.co"
+
+
+def test_model_for_this_runtime_only_never_reaches_drive(storage, monkeypatch, capsys):
+    drive_models = runtime.drive_root(storage) / "models"
+    link = "https://huggingface.co/author/repo/blob/main/split/model.safetensors"
+    fake_requests(monkeypatch, [{"data": b"runtime model"}])
+    runtime.fetch_model(storage, link, "vae", runtime_only=True)
+    local = runtime.BASE / "models/vae/model.safetensors"
+    assert local.read_bytes() == b"runtime model"
+    assert not (drive_models / "vae").exists() and list(drive_models.rglob("*")) == []
+    assert runtime.t("download.saved_runtime") in capsys.readouterr().out
+    # Nothing unfinished stays behind where the download was checked.
+    assert list((runtime.PRIVATE / "downloads").iterdir()) == []
+    # Saving the environment sends the runtime's new models to Drive, but not this one.
+    (runtime.BASE / "models/vae/from-manager.safetensors").write_bytes(b"downloaded in ComfyUI")
+    runtime.save_new_cache_models(storage, force=True)
+    assert sorted(p.name for p in (drive_models / "vae").iterdir()) == ["from-manager.safetensors"]
+    # The same name again is refused before and after downloading, and a wrong hash leaves nothing.
+    fake_requests(monkeypatch, [{"data": b"again"}])
+    with pytest.raises(FileExistsError, match=re.escape(runtime.t("download.exists_runtime"))):
+        runtime.fetch_model(storage, link, "vae", runtime_only=True)
+    fake_requests(monkeypatch, [{"data": b"served", "headers": {"Content-Disposition": 'attachment; filename="model.safetensors"'}}])
+    with pytest.raises(FileExistsError, match=re.escape(runtime.t("download.exists_runtime"))):
+        runtime.fetch_model(storage, "https://civitai.com/api/download/models/12345", "vae", runtime_only=True)
+    fake_requests(monkeypatch, [{"data": b"tampered"}])
+    with pytest.raises(RuntimeError, match="SHA256"):
+        runtime.fetch_model(storage, link, "loras", "checked.safetensors", "0" * 64, runtime_only=True)
+    assert not (runtime.BASE / "models/loras/checked.safetensors").exists()
+    assert list((runtime.PRIVATE / "downloads").iterdir()) == [] and local.read_bytes() == b"runtime model"
+    # Without the option the same link goes to Drive as it always did.
+    fake_requests(monkeypatch, [{"data": b"kept model"}])
+    runtime.fetch_model(storage, link, "loras", "kept.safetensors")
+    assert (drive_models / "loras/kept.safetensors").read_bytes() == b"kept model"
+
+
+def test_notebook_cells_for_setup_download_and_status_are_as_a_user_needs_them():
+    import build_notebook
+    setup, download, status = notebook_cell("runtime.setup("), notebook_cell("runtime.fetch_model("), notebook_cell("RUN_CONNECTION_DIAGNOSIS")
+    # The long setup log scrolls inside a bounded area, set before anything is printed.
+    assert setup.index("setIframeHeight(0, true, {maxHeight: 300})") < setup.index("runtime.setup(")
+    assert 'RUNTIME_ONLY = False #@param {type:"boolean"}' in download and "runtime_only=RUNTIME_ONLY" in download
+    assert "RUN_ISOLATION_CHECK" not in status and "isolation_report" not in status
+    # Nothing in the notebook's own text refers to how it used to work.
+    for language in ("JP", "EN"):
+        text = "\n".join(cell["source"] for cell in build_notebook.build(language)["cells"] if "write_text(" not in cell["source"])
+        for phrase in ("従来", "これまで", "as before", "used to"):
+            assert phrase not in text, phrase

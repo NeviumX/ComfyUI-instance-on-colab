@@ -306,7 +306,9 @@ def app_tree_action(action, args, source, sink):
             (BASE / "models" / name).mkdir(parents=True, exist_ok=True)
         repo_models = repo / "models"
         if repo_models.exists() and not repo_models.is_symlink():
-            shutil.copytree(repo_models, BASE / "models", dirs_exist_ok=True)
+            # What is already there stays: it may be a link into the read-only view of Drive.
+            shutil.copytree(repo_models, BASE / "models", dirs_exist_ok=True,
+                            copy_function=lambda source, target: os.path.lexists(target) or shutil.copy2(source, target))
             shutil.rmtree(repo_models)
         if not repo_models.exists():
             repo_models.symlink_to(BASE / "models", target_is_directory=True)
@@ -334,6 +336,26 @@ def app_tree_action(action, args, source, sink):
         with tarfile.open(fileobj=sink, mode="w|gz", compresslevel=1) as tf:
             for child in sorted(envdir.iterdir()):
                 tf.add(child, arcname=child.name, filter=archive_filter)
+    elif action == "link-models":
+        view, cache = Path(args[0]), BASE / "models"
+        for parent, _, files in os.walk(cache, followlinks=False):
+            for name in files:
+                link = Path(parent) / name
+                # No longer on Drive: the link into the view leads nowhere.
+                if link.is_symlink() and view in Path(os.readlink(link)).parents and not link.exists():
+                    link.unlink()
+        linked = 0
+        for file in regular_files(view):
+            link = cache / file.relative_to(view)
+            if link.parent.is_symlink() or (link.parent.exists() and not link.parent.is_dir()):
+                continue
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if link.is_symlink() and os.readlink(link) != str(file):
+                link.unlink()
+            if not os.path.lexists(link):  # A model of this runtime with the same name stays.
+                link.symlink_to(file)
+                linked += 1
+        sink.write(str(linked).encode())
     elif action == "zip-output":
         import zipfile
         root = BASE / "output"
@@ -529,8 +551,67 @@ def regular_files(root):
             yield file
 
 
+DRIVE_MODELS = Path("/content/comfy-drive-models")
+
+
+def drive_models_shown():
+    return os.path.ismount(DRIVE_MODELS)
+
+
+def show_drive_models(config):
+    """Give the application user a read-only view of Drive's models folder, and of nothing else.
+
+    bindfs presents that one folder as the application user's own files; the Drive mount it
+    reads from stays where only root can go. The view lies outside the application's tree,
+    so that user cannot move the place root mounts on."""
+    source = drive_root(config) / "models"
+    source.mkdir(exist_ok=True)
+    if drive_models_shown():
+        return
+    try:
+        if DRIVE_MODELS.is_symlink():
+            raise RuntimeError(t("models.view_place", path=DRIVE_MODELS))
+        DRIVE_MODELS.mkdir(mode=0o755, exist_ok=True)
+        if DRIVE_MODELS.stat().st_uid != os.geteuid() or any(DRIVE_MODELS.iterdir()):
+            raise RuntimeError(t("models.view_place", path=DRIVE_MODELS))
+        if not shutil.which("bindfs"):
+            if not APT_INDEX_REFRESHED:
+                run(["apt-get", "update", "-qq"])
+                APT_INDEX_REFRESHED.append(True)
+            # Without what it only recommends: that would swap the FUSE tools Drive is mounted with.
+            run(["apt-get", "install", "-y", "-qq", "--no-install-recommends", "bindfs"])
+        run(["bindfs", "-r", "--force-user=" + APP_USER, "--force-group=" + APP_USER, "--perms=a=rX",
+             "-o", "allow_other", source, DRIVE_MODELS])
+        run(["ls", DRIVE_MODELS], app=True, capture=True)  # The application user can really look in.
+    except (RuntimeError, OSError) as failure:
+        hide_drive_models()
+        raise RuntimeError(t("models.view_failed", reason=failure)) from None
+
+
+def hide_drive_models():
+    """Take the view away again: Drive cannot be unmounted while something still reads from it."""
+    for command in (["umount", DRIVE_MODELS], ["fusermount", "-u", DRIVE_MODELS], ["umount", "-l", DRIVE_MODELS]):
+        if not drive_models_shown():
+            return
+        try:
+            subprocess.run(list(map(str, command)), capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+def link_models(config):
+    """With the view in place nothing is copied: ComfyUI's models folder gets a link to each
+    of Drive's files, next to the models downloaded on this runtime."""
+    show_drive_models(config)
+    linked = int(app_action("link-models", DRIVE_MODELS) or 0)
+    print(t("models.linked", linked=linked))
+    return linked
+
+
 def sync_models(config):
     """Drive is authoritative; refresh the private runtime's working copy."""
+    if config.get("model_access") == "direct":
+        return link_models(config)
     source = drive_root(config) / "models"
     source.mkdir(exist_ok=True)
     copied = 0
@@ -720,7 +801,7 @@ def install_cloudflared():
 
 
 def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
-          checkpoint_seconds=120, apt_packages=(), restore=True):
+          checkpoint_seconds=120, apt_packages=(), restore=True, model_access="direct"):
     if sys.platform != "linux" or not Path("/content").exists() or os.geteuid() != 0:
         raise RuntimeError(t("setup.not_colab"))
     if CONFIG.exists():
@@ -740,9 +821,11 @@ def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
     PRIVATE.chmod(0o700)
     apt_install(["git", "ffmpeg", "libgl1", "libglib2.0-0", *apt_packages])
     mount_drive()
+    if model_access not in ("direct", "copy"):
+        raise ValueError(t("setup.invalid_model_access"))
     config = {"drive_folder": root_name,
               "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-              "checkpoint_seconds": checkpoint_seconds}
+              "checkpoint_seconds": checkpoint_seconds, "model_access": model_access}
     storage = drive_root(config)
     for directory in (storage, storage / "environment", *(storage / "models" / name for name in MODEL_FOLDERS)):
         directory.mkdir(parents=True, exist_ok=True)
@@ -754,6 +837,8 @@ def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
     envdir = BASE / "environment"
     ensure_app_user()
     create_app_tree()
+    if model_access == "direct":
+        show_drive_models(config)  # Before the long steps: if it cannot be done, that is known at once.
     pointer_path = storage / "environment/latest.json"
     if pointer_path.exists() and not restore:
         print(t("setup.fresh_environment"))
@@ -823,7 +908,8 @@ def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
             install_packages("-r", req)
     run([py, "-m", "pip", "check"], app=True)
     run([py, "-c", "import torch; print('PyTorch:', torch.__version__); print('CUDA build:', torch.version.cuda); torch.cuda.init(); print('GPU:', torch.cuda.get_device_name(0))"], app=True)
-    print(t("setup.copying_models"))
+    if model_access == "copy":
+        print(t("setup.copying_models"))
     sync_models(config)
     install_cloudflared()
     private_write(CONFIG, json.dumps(config))
@@ -972,16 +1058,19 @@ def served_filename(headers):
     return name if re.fullmatch(r"[^\x00-\x1f:]{1,200}", name) and not name.startswith(".") else ""
 
 
-def fetch_model(config, url, folder, filename="", sha256="", token_secret=""):
-    """Download the model a pasted link points at into a folder of Drive's models directory."""
+def fetch_model(config, url, folder, filename="", sha256="", token_secret="", runtime_only=False):
+    """Download the model a pasted link points at into a folder of Drive's models directory,
+    or with runtime_only into the same folder of this runtime's models, leaving Drive alone."""
     download, suggested = parse_model_url(url)
     folder = safe_relative(folder.strip().strip("/"))
     filename = filename.strip() or suggested
     if "/" in filename:
         raise ValueError(t("download.filename_has_folder"))
     if filename:
-        return download_model(config, download, folder + "/" + filename, sha256.strip(), token_secret)
-    return download_model(config, download, folder, sha256.strip(), token_secret, name_from_server=True)
+        return download_model(config, download, folder + "/" + filename, sha256.strip(), token_secret,
+                              runtime_only=runtime_only)
+    return download_model(config, download, folder, sha256.strip(), token_secret, name_from_server=True,
+                          runtime_only=runtime_only)
 
 
 def checked_https_url(url):
@@ -1006,6 +1095,37 @@ def checked_https_url(url):
     return parsed
 
 
+class PlainProgress:
+    """Download progress as lines of text, where the notebook's own bar is not available."""
+    def __init__(self, total):
+        self.total, self.done, self.shown = total, 0, 0
+
+    def update(self, amount):
+        self.done += amount
+        megabytes = self.done / 1048576
+        if self.total:
+            step = self.done * 10 // self.total
+            line = t("download.progress", done=megabytes, total=self.total / 1048576, percent=self.done * 100 / self.total)
+        else:
+            step = self.done // (512 * 1048576)
+            line = t("download.progress_size", done=megabytes)
+        if step != self.shown:
+            self.shown = step
+            print(line, flush=True)
+
+    def close(self):
+        pass
+
+
+def download_progress(total):
+    """A progress bar in the notebook's output for a download of total bytes (0: unknown)."""
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return PlainProgress(total)
+    return tqdm(total=total or None, desc=t("download.label"), unit="B", unit_scale=True, unit_divisor=1024)
+
+
 def stream_model(session, url, target, token_secret=""):
     """Follow HTTPS redirects, forwarding the token only to the original host."""
     initial_host = checked_https_url(url).hostname
@@ -1028,19 +1148,33 @@ def stream_model(session, url, target, token_secret=""):
             if "text/html" in content_type or "application/json" in content_type:
                 raise RuntimeError(t("download.not_a_model"))
             digest = hashlib.sha256()
-            with Path(target).open("wb") as file:
-                for chunk in response.iter_content(4 * 1024 * 1024):
-                    file.write(chunk)
-                    digest.update(chunk)
+            length = str(response.headers.get("Content-Length", ""))
+            progress = download_progress(int(length) if length.isdigit() else 0)
+            try:
+                with Path(target).open("wb") as file:
+                    for chunk in response.iter_content(4 * 1024 * 1024):
+                        file.write(chunk)
+                        digest.update(chunk)
+                        progress.update(len(chunk))
+            finally:
+                progress.close()
             if not Path(target).stat().st_size:
                 raise RuntimeError(t("download.empty"))
             return digest.hexdigest(), served_filename(response.headers)
     raise RuntimeError(t("download.too_many_redirects"))
 
 
-def download_model(config, url, relative_path, sha256="", token_secret="", name_from_server=False):
+def keep_on_runtime(relative):
+    """Mark a model of this runtime as not to be saved: saving sends its new models to Drive."""
+    origin_file = PRIVATE / "model-origins.json"
+    origins = set(json.loads(origin_file.read_text())) if origin_file.exists() else set()
+    private_write(origin_file, json.dumps(sorted(origins | {relative})))
+
+
+def download_model(config, url, relative_path, sha256="", token_secret="", name_from_server=False, runtime_only=False):
     """Save a model under relative_path in Drive's models folder. With name_from_server,
-    relative_path is the folder and the file takes the name the site serves it under."""
+    relative_path is the folder and the file takes the name the site serves it under.
+    With runtime_only it goes into this runtime's models folder instead and never to Drive."""
     import requests
     rel = safe_relative(relative_path)
     parsed = checked_https_url(url)
@@ -1050,12 +1184,18 @@ def download_model(config, url, relative_path, sha256="", token_secret="", name_
         raise ValueError(t("download.url_has_query"))
     if sha256 and not re.fullmatch(r"[a-fA-F0-9]{64}", sha256):
         raise ValueError(t("download.invalid_sha256"))
-    models = drive_root(config) / "models"
-    models.mkdir(exist_ok=True)
-    target = contained_path(models, rel)
-    if not name_from_server and target.exists():
-        raise FileExistsError(t("download.exists"))
-    folder = target if name_from_server else target.parent
+    if runtime_only:
+        # Checked and completed where only root can go, then handed to the application user.
+        folder = PRIVATE / "downloads"
+        if not name_from_server and os.path.lexists(BASE / "models" / rel):
+            raise FileExistsError(t("download.exists_runtime"))
+    else:
+        models = drive_root(config) / "models"
+        models.mkdir(exist_ok=True)
+        target = contained_path(models, rel)
+        if not name_from_server and target.exists():
+            raise FileExistsError(t("download.exists"))
+        folder = target if name_from_server else target.parent
     folder.mkdir(parents=True, exist_ok=True)
     partial = folder / (".comfy-" + secrets.token_hex(8) + ".part")
     try:
@@ -1067,8 +1207,16 @@ def download_model(config, url, relative_path, sha256="", token_secret="", name_
         if name_from_server:
             if not served:
                 raise RuntimeError(t("download.no_filename"))
-            rel = rel + "/" + served
-            target = contained_path(models, rel)
+            rel = safe_relative(rel + "/" + served)
+        if runtime_only:
+            if os.path.lexists(BASE / "models" / rel):
+                raise FileExistsError(t("download.exists_runtime"))
+            with partial.open("rb") as stream:
+                app_action("put", "models/" + rel, stdin=stream)
+            keep_on_runtime(rel)
+            print(t("download.saved_runtime"), rel, "SHA256:", digest)
+            return
+        target = contained_path(models, rel)
         if target.exists():
             raise FileExistsError(t("download.exists_not_overwritten"))
         os.replace(partial, target)
@@ -1245,6 +1393,7 @@ def stop_request_state():
 def delete_colab_runtime():
     """Finish writing to Drive, then give the runtime back: it stops using compute units."""
     from google.colab import drive, runtime as colab
+    hide_drive_models()
     drive.flush_and_unmount()
     colab.unassign()
 

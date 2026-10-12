@@ -148,6 +148,8 @@ def build(language):
     RESTORE_SAVED_ENVIRONMENT = True #@param {{type:"boolean"}}
     #@markdown {t("settings.apt_packages")}
     APT_PACKAGES = "" #@param {{type:"string"}}
+    #@markdown {t("settings.model_access")}
+    MODEL_ACCESS = "direct" #@param ["direct", "copy"]
     if globals().get("COMFY_REF_OVERRIDE"):
         COMFY_REF = COMFY_REF_OVERRIDE
     print("COMFY_REF:", COMFY_REF)
@@ -165,9 +167,11 @@ print({said("unpack.done")})
 ''')
     code("setup", f'''
     #@markdown {t("setup.note")}
+    from IPython.display import Javascript, display
+    display(Javascript("google.colab.output.setIframeHeight(0, true, {{maxHeight: 300}})"))
     runtime.setup(root_name=DRIVE_FOLDER_NAME, comfy_ref=COMFY_REF,
                   checkpoint_seconds=CHECKPOINT_SECONDS, apt_packages=APT_PACKAGES.split(),
-                  restore=RESTORE_SAVED_ENVIRONMENT)
+                  restore=RESTORE_SAVED_ENVIRONMENT, model_access=MODEL_ACCESS)
     print({said("setup.models_location")} + DRIVE_FOLDER_NAME + "/models/")
     ''')
     markdown("models")
@@ -182,6 +186,8 @@ print({said("unpack.done")})
     MODEL_SHA256 = "" #@param {{type:"string"}}
     #@markdown {t("download.token")}
     USE_DOWNLOAD_TOKEN = False #@param {{type:"boolean"}}
+    #@markdown {t("download.runtime_only")}
+    RUNTIME_ONLY = False #@param {{type:"boolean"}}
     DOWNLOAD_NOW = False #@param {{type:"boolean"}}
     if DOWNLOAD_NOW:
         {LOAD_CONFIG}
@@ -190,7 +196,8 @@ print({said("unpack.done")})
             if USE_DOWNLOAD_TOKEN:
                 from google.colab import userdata
                 token = userdata.get(runtime.model_token_name(MODEL_URL))
-            runtime.fetch_model(config, MODEL_URL, MODEL_FOLDER, MODEL_FILENAME, MODEL_SHA256, token)
+            runtime.fetch_model(config, MODEL_URL, MODEL_FOLDER, MODEL_FILENAME, MODEL_SHA256, token,
+                                runtime_only=RUNTIME_ONLY)
         finally:
             token = ""
     else:
@@ -235,12 +242,8 @@ print({said("unpack.done")})
     code("status", f'''
     #@markdown {t("status.diagnosis")}
     RUN_CONNECTION_DIAGNOSIS = False #@param {{type:"boolean"}}
-    #@markdown {t("status.isolation")}
-    RUN_ISOLATION_CHECK = False #@param {{type:"boolean"}}
     if RUN_CONNECTION_DIAGNOSIS:
         runtime.run([runtime.sys.executable, "/content/comfy_colab_runtime.py", "diagnose"], timeout=600)
-    if RUN_ISOLATION_CHECK:
-        runtime.isolation_report()
     path = runtime.PRIVATE / "checkpoint-status.json"
     print(path.read_text() if path.exists() else {said("status.no_status")})
     for name in ("comfy.log", "supervisor.log", "proxy.log", "tunnel.log"):
@@ -276,6 +279,7 @@ print({said("unpack.done")})
         runtime.stop(config, save=True)
         if FLUSH_AND_UNMOUNT:
             from google.colab import drive
+            runtime.hide_drive_models()
             drive.flush_and_unmount()
             print({said("stop.unmounted")})
         else:

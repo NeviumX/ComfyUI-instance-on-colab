@@ -70,6 +70,10 @@
       "apt_packages": {
         "JP": "追加で必要なOSパッケージ（空白区切り、任意）。",
         "EN": "Extra OS packages you need (space separated, optional)."
+      },
+      "model_access": {
+        "JP": "Googleドライブのモデルの使い方。`direct`: コピーせずに直接読み込みます（各モデルは最初に使うときに読み込まれ、初回は時間がかかります）。`copy`: セットアップ時にすべてColabへコピーします（モデル全体の空き容量が必要です）。",
+        "EN": "How the models on Google Drive are used. `direct`: read in place without copying (each model is fetched the first time it is used, so its first load takes longer). `copy`: all of them are copied to Colab during setup (needs free space for all models)."
       }
     },
     "unpack": {
@@ -103,7 +107,8 @@
         "Googleドライブの `ComfyUI-Colab/models/` に、種類別のフォルダー（`checkpoints`・`diffusion_models`・`text_encoders`・`vae`・`loras`・`controlnet` など）があります。",
         "",
         "- **手動で置く:** Googleドライブの該当フォルダーへアップロードし、5を実行します。",
-        "- **URLから取得する:** 4にURLを貼り付けて実行します。Googleドライブへ保存し、そのままColabにも反映します。"
+        "- **URLから取得する:** 4にURLを貼り付けて実行します。Googleドライブへ保存し、そのまま使えます。`RUNTIME_ONLY` をONにすると、Googleドライブへ保存せず、このランタイムだけで使います。",
+        "- Googleドライブのモデルは使うときに読み込まれるため、各モデルの初回の読み込みには時間がかかります。セットアップ時にまとめてColabへコピーしておく場合は、1の `MODEL_ACCESS` を `copy` にします。"
       ],
       "EN": [
         "## Models",
@@ -111,7 +116,8 @@
         "`ComfyUI-Colab/models/` on Google Drive has a folder for each type (`checkpoints`, `diffusion_models`, `text_encoders`, `vae`, `loras`, `controlnet` and so on).",
         "",
         "- **Upload by hand:** upload into the matching folder on Google Drive, then run cell 5.",
-        "- **Download from a URL:** paste the URL into cell 4 and run it. The model is saved to Google Drive and made available to Colab right away."
+        "- **Download from a URL:** paste the URL into cell 4 and run it. The model is saved to Google Drive and can be used right away. With `RUNTIME_ONLY` checked it is not saved to Google Drive and is used on this runtime only.",
+        "- Models on Google Drive are fetched when they are used, so the first load of each one takes longer. To copy them all to Colab during setup instead, set `MODEL_ACCESS` to `copy` in cell 1."
       ]
     },
     "download": {
@@ -142,6 +148,10 @@
       "skipped": {
         "JP": "取得する場合は、URLを入力しDOWNLOAD_NOWをONにして実行してください。",
         "EN": "To download, enter a URL, check DOWNLOAD_NOW and run the cell."
+      },
+      "runtime_only": {
+        "JP": "Googleドライブへ保存せず、このランタイムだけで使う（ランタイムを削除すると消えます）。",
+        "EN": "Use it on this runtime only, without saving it to Google Drive (it is gone when the runtime is deleted)."
       }
     },
     "refresh": {
@@ -220,12 +230,8 @@
         "EN": "7. Save status and logs / diagnosis"
       },
       "diagnosis": {
-        "JP": "画面の表示に必要な通信を、ComfyUI本体・認証プロキシ・公開URL（6-2のみ）の順に試します。",
-        "EN": "Tries the requests the UI needs, in order: ComfyUI, the auth proxy, the public URL (6-2 only)."
-      },
-      "isolation": {
-        "JP": "ComfyUI用のユーザーから届くローカルサービスを一覧表示します。",
-        "EN": "Lists the local services that the ComfyUI user can reach."
+        "JP": "画面が表示されないときにONにして実行すると、接続がどこで止まっているかを調べます。",
+        "EN": "When the UI does not appear, check this and run the cell to find where the connection stops."
       },
       "no_status": {
         "JP": "保存状況はまだありません。",
@@ -236,14 +242,14 @@
       "JP": [
         "## 保存と終了",
         "",
-        "環境（ComfyUI本体・カスタムノード・設定・依存関係の一覧）は自動でGoogleドライブへ保存され、次回の3で復元されます。直前の変更を確実に残したいときは8を使います。生成物はGoogleドライブへ保存されません。",
+        "環境（ComfyUI本体・カスタムノード・設定）は自動でGoogleドライブへ保存され、次回の3で復元されます。直前の変更を確実に残したいときは8を使います。生成物はGoogleドライブへ保存されません。",
         "",
         "終了するときは、PCへの出力の取得を確認してから10を実行し、完了の表示を確認してからランタイムを削除してください。"
       ],
       "EN": [
         "## Saving and finishing",
         "",
-        "The environment (ComfyUI itself, custom nodes, settings and the list of dependencies) is saved to Google Drive automatically and restored by cell 3 next time. Use cell 8 when you want to be sure the latest changes are saved. Generated files are not saved to Google Drive.",
+        "The environment (ComfyUI itself, custom nodes and settings) is saved to Google Drive automatically and restored by cell 3 next time. Use cell 8 when you want to be sure the latest changes are saved. Generated files are not saved to Google Drive.",
         "",
         "When you finish, make sure your outputs are on your PC, run cell 10, and wait for its completion message before you delete the runtime."
       ]
@@ -302,7 +308,7 @@
         "",
         "- **手順:** 0をONにして実行（または1の `COMFY_REF` に更新先のバージョンを入力）→ 1 → 2 → 3 → 11 → 6-1〜6-3 のいずれか。起動中の場合は、10で停止（`FLUSH_AND_UNMOUNT` はOFF）してから 0 → 1 → 11 → 6-1〜6-3 のいずれか を実行します。",
         "- 更新後の環境はGoogleドライブへ保存され、次回からは新しいバージョンで復元されます。",
-        "- 更新に失敗した場合（新しいバージョンとカスタムノードの依存関係が合わない場合など）は元のバージョンへ戻し、Googleドライブの保存内容は変えません。"
+        "- 更新に失敗した場合（新しいバージョンとカスタムノードが合わない場合など）は元のバージョンへ戻し、Googleドライブの保存内容は変えません。"
       ],
       "EN": [
         "## Updating ComfyUI",
@@ -311,7 +317,7 @@
         "",
         "- **Steps:** run cell 0 with its box checked (or enter the version to update to as `COMFY_REF` in cell 1) → 1 → 2 → 3 → 11 → one of 6-1 to 6-3. If ComfyUI is running, stop it with cell 10 (`FLUSH_AND_UNMOUNT` off), then run 0 → 1 → 11 → one of 6-1 to 6-3.",
         "- The updated environment is saved to Google Drive and is the one restored from then on.",
-        "- If the update fails (for example when the dependencies of a custom node do not fit the new version), ComfyUI is put back to its previous version and nothing on Google Drive changes."
+        "- If the update fails (for example when a custom node does not fit the new version), ComfyUI is put back to its previous version and nothing on Google Drive changes."
       ]
     },
     "update": {
@@ -332,16 +338,16 @@
       "JP": [
         "## セキュリティについて",
         "",
-        "- 6-1は外部に公開しません。6-2と6-3で公開されるのは認証付きの入口だけです。6-2ではペアリングコードを入力していない端末、6-3ではCloudflare Accessの署名がない要求を拒否し、ComfyUI本体は外部から直接は見えません。トンネルには [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) を使います（6-2は [Quick Tunnel](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)）。",
-        "- ComfyUIとカスタムノードは権限を下げた専用ユーザーで動き、Googleドライブのマウント先と接続用の秘密情報には届きません。ただしコンテナーによる隔離ではありません。Colab自身の管理用サービスへはこのユーザーからも接続できるため、Colabを狙った悪意あるノードまでは防げません。",
+        "- 6-1は外部に公開しません。6-2と6-3で公開されるのは認証付きの入口だけです。6-2ではペアリングコードを入力していない端末、6-3ではCloudflare Accessでログインしていない端末を拒否します。",
+        "- カスタムノードはランタイム上で独自のコードを実行します。ノートブックはGoogleドライブと接続用の秘密情報をカスタムノードから保護しますが、完全な隔離ではありません。信頼できるカスタムノードとモデルだけを導入してください。",
         "- 接続できた利用者はカスタムノードを導入でき、保存した環境に含まれるノードは次回も実行されます。不審なノードを入れてしまった場合は、1の `RESTORE_SAVED_ENVIRONMENT` をOFFにして新しい環境で始めてください。",
         "- Colabの「ドライブをマウント」ボタンは使わず、このノートブックのセットアップだけでGoogleドライブへ接続してください。"
       ],
       "EN": [
         "## Security",
         "",
-        "- Cell 6-1 exposes nothing to the outside. With cells 6-2 and 6-3 only an authenticated entrance is exposed: 6-2 rejects a device that has not entered a pairing code, 6-3 rejects a request without the signature of Cloudflare Access, and ComfyUI itself cannot be reached from outside. The tunnel is a [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) (a [Quick Tunnel](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) for 6-2).",
-        "- ComfyUI and custom nodes run as a dedicated user with reduced privileges that cannot reach the Drive mount or the connection secrets. This is not container isolation: the management services Colab itself runs are reachable by that user, so it does not stop a malicious node written to target Colab.",
+        "- Cell 6-1 exposes nothing to the outside. With cells 6-2 and 6-3 only an authenticated entrance is exposed: 6-2 rejects a device that has not entered a pairing code, and 6-3 a device that has not signed in through Cloudflare Access.",
+        "- Custom nodes run their own code on the runtime. The notebook keeps Google Drive and the connection secrets away from them, but this is not complete isolation. Install only custom nodes and models you trust.",
         "- Anyone who can connect can install custom nodes, and the nodes in the saved environment run again next time. If you installed a node you do not trust, turn off `RESTORE_SAVED_ENVIRONMENT` in cell 1 and start with a fresh environment.",
         "- Do not use the \"Mount Drive\" button of Colab; connect Drive only through the setup in this notebook."
       ]
@@ -486,6 +492,18 @@
       "synced": {
         "JP": "Googleドライブからモデルを反映しました: {copied}ファイル",
         "EN": "Models copied from Google Drive: {copied} file(s)"
+      },
+      "linked": {
+        "JP": "Googleドライブのモデルを直接参照します（新しく追加: {linked}件）。各モデルは最初に使うときに読み込まれるため、初回は時間がかかります。",
+        "EN": "Reading models directly from Google Drive (newly added: {linked}). Each model is fetched the first time it is used, so its first load takes longer."
+      },
+      "view_place": {
+        "JP": "{path} をモデルの参照用フォルダーとして使えません。",
+        "EN": "{path} cannot be used as the folder for reading models."
+      },
+      "view_failed": {
+        "JP": "Googleドライブのモデルを直接読み込む準備ができませんでした（{reason}）。1の MODEL_ACCESS を copy にして3を実行し直すと、モデルをColabへコピーして使えます。",
+        "EN": "Could not prepare reading models directly from Google Drive ({reason}). Set MODEL_ACCESS to copy in cell 1 and run cell 3 again to copy the models to Colab and use them from there."
       }
     },
     "environment": {
@@ -592,6 +610,10 @@
       "done": {
         "JP": "セットアップ完了。Googleドライブの保存先: MyDrive/",
         "EN": "Setup complete. Models folder on Google Drive: MyDrive/"
+      },
+      "invalid_model_access": {
+        "JP": "MODEL_ACCESS は direct か copy を指定してください。",
+        "EN": "MODEL_ACCESS must be direct or copy."
       }
     },
     "download": {
@@ -698,6 +720,26 @@
       "connection_failed": {
         "JP": "モデルのダウンロード通信に失敗しました。接続・アクセス権を確認してください。",
         "EN": "The model download connection failed. Check the connection and your access rights."
+      },
+      "label": {
+        "JP": "ダウンロード",
+        "EN": "Downloading"
+      },
+      "progress": {
+        "JP": "ダウンロード中: {done:.0f} MB / {total:.0f} MB（{percent:.0f}%）",
+        "EN": "Downloading: {done:.0f} MB / {total:.0f} MB ({percent:.0f}%)"
+      },
+      "progress_size": {
+        "JP": "ダウンロード中: {done:.0f} MB",
+        "EN": "Downloading: {done:.0f} MB"
+      },
+      "saved_runtime": {
+        "JP": "このランタイムに保存しました（Googleドライブには保存されません）:",
+        "EN": "Saved on this runtime (not saved to Google Drive):"
+      },
+      "exists_runtime": {
+        "JP": "このランタイムに同じ名前のモデルがあります。別の保存名を指定してください。",
+        "EN": "This runtime already has a model with the same name. Choose a different file name."
       }
     },
     "proxy": {
