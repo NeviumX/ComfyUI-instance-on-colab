@@ -1,0 +1,1008 @@
+{
+  "notebook": {
+    "intro": {
+      "JP": [
+        "# ComfyUI instance on Colab",
+        "",
+        "ColabのGPUでComfyUIを起動し、[Comfy Desktop](https://github.com/Comfy-Org/Comfy-Desktop) の **Remote Connection**、または通常のブラウザーから接続します。モデルと環境はGoogle Driveの `ComfyUI-Colab/` に保存します。",
+        "",
+        "**使い方:** ランタイムのタイプでGPUを選び、**1 → 2 → 3 → 6-1〜6-3 のいずれか** の順に実行します。入力欄やチェックボックスを設定してから、そのセルを実行してください。チェックボックスのある操作は、ONにして実行したときだけ行われます。",
+        "",
+        "**前提:** Driveへの接続はDrive全体への許可になります。個人データを置かない専用のGoogleアカウントを使い、信頼できるカスタムノードとモデルだけを導入してください（末尾の「セキュリティについて」）。[Colabの利用条件](https://research.google.com/colaboratory/faq.html) に従い、有料プランでの利用を前提とします。"
+      ],
+      "EN": [
+        "# ComfyUI instance on Colab",
+        "",
+        "Starts ComfyUI on a Colab GPU and lets you connect from the **Remote Connection** of [Comfy Desktop](https://github.com/Comfy-Org/Comfy-Desktop) or from a regular browser. Models and the environment are kept in `ComfyUI-Colab/` on Google Drive.",
+        "",
+        "**How to use:** Choose a GPU in the runtime type, then run cells **1 → 2 → 3 → one of 6-1 to 6-3** in order. Set the fields and checkboxes of a cell before you run it. An action with a checkbox only happens when you run the cell with the box checked.",
+        "",
+        "**Before you start:** Connecting Drive grants access to your whole Drive. Use a dedicated Google account that holds no personal data, and install only custom nodes and models you trust (see \"Security\" at the end). Follow the [Colab terms](https://research.google.com/colaboratory/faq.html); a paid plan is assumed."
+      ]
+    },
+    "check": {
+      "title": {
+        "JP": "0. 更新確認",
+        "EN": "0. Check for updates"
+      },
+      "use_latest": {
+        "JP": "ComfyUIの最新リリースを確認します。ONにすると、1の `COMFY_REF` の代わりに最新版を使います。",
+        "EN": "Checks the latest release of ComfyUI. Turn this on to use it instead of `COMFY_REF` in cell 1. "
+      },
+      "failed": {
+        "JP": "最新リリースを取得できませんでした。しばらくしてから実行し直してください。",
+        "EN": "Could not get the latest release. Try again in a while."
+      },
+      "latest": {
+        "JP": "ComfyUIの最新リリース:",
+        "EN": "Latest ComfyUI release:"
+      },
+      "using": {
+        "JP": "COMFY_REFを最新リリースにしました。続けて1を実行してください。",
+        "EN": "COMFY_REF is set to the latest release. Run cell 1 next."
+      },
+      "not_using": {
+        "JP": "COMFY_REFは1の入力値を使います。最新リリースを使う場合は、USE_LATEST_COMFYUIをONにして実行してください。",
+        "EN": "COMFY_REF keeps the value entered in cell 1. To use the latest release, check USE_LATEST_COMFYUI and run the cell."
+      }
+    },
+    "settings": {
+      "title": {
+        "JP": "1. 設定",
+        "EN": "1. Settings"
+      },
+      "drive_folder": {
+        "JP": "Driveの保存先フォルダー（マイドライブからの相対パス）。同じフォルダーを複数のランタイムで同時に使わないでください。",
+        "EN": "Folder on Drive (relative to My Drive). Do not use the same folder from several runtimes at once."
+      },
+      "comfy_ref": {
+        "JP": "ComfyUIのバージョン（リリースタグ）。新しい環境を作るときと、11で更新するときに使われます。",
+        "EN": "ComfyUI version (release tag). Used when a new environment is created and when you update with cell 11."
+      },
+      "checkpoint_seconds": {
+        "JP": "環境を自動保存する間隔（秒、60以上）。",
+        "EN": "Interval between automatic saves of the environment (seconds, 60 or more)."
+      },
+      "restore": {
+        "JP": "Driveに保存した環境（カスタムノード・設定）を復元する。OFFにすると新しい環境で始めます。",
+        "EN": "Restore the environment saved on Drive (custom nodes and settings). Turn off to start with a fresh one."
+      },
+      "apt_packages": {
+        "JP": "追加で必要なOSパッケージ（空白区切り、任意）。",
+        "EN": "Extra OS packages you need (space separated, optional)."
+      }
+    },
+    "unpack": {
+      "title": {
+        "JP": "2. 実行コードを展開",
+        "EN": "2. Unpack the runtime code"
+      },
+      "done": {
+        "JP": "実行コードの展開が完了しました。",
+        "EN": "The runtime code is unpacked."
+      }
+    },
+    "setup": {
+      "title": {
+        "JP": "3. Driveを接続してセットアップ / 環境を復元",
+        "EN": "3. Connect Drive and set up / restore the environment"
+      },
+      "note": {
+        "JP": "表示されるGoogleの画面でDriveへの接続を許可します。完了まで数分かかります。",
+        "EN": "Allow access to Drive in the Google dialog that appears. This takes a few minutes."
+      },
+      "models_location": {
+        "JP": "モデルの置き場所: マイドライブ/",
+        "EN": "Put models in: My Drive/"
+      }
+    },
+    "models": {
+      "JP": [
+        "## モデル",
+        "",
+        "Driveの `ComfyUI-Colab/models/` に、種類別のフォルダー（`checkpoints`・`diffusion_models`・`text_encoders`・`vae`・`loras`・`controlnet` など）があります。",
+        "",
+        "- **手動で置く:** Driveの該当フォルダーへアップロードし、5を実行します。",
+        "- **URLから取得する:** 4にURLを貼り付けて実行します。Driveへ保存し、そのままColabにも反映します。"
+      ],
+      "EN": [
+        "## Models",
+        "",
+        "`ComfyUI-Colab/models/` on Drive has a folder for each type (`checkpoints`, `diffusion_models`, `text_encoders`, `vae`, `loras`, `controlnet` and so on).",
+        "",
+        "- **Upload by hand:** upload into the matching folder on Drive, then run cell 5.",
+        "- **Download from a URL:** paste the URL into cell 4 and run it. The model is saved to Drive and made available to Colab right away."
+      ]
+    },
+    "download": {
+      "title": {
+        "JP": "4. URLからモデルを取得（Hugging Face / Civitai）",
+        "EN": "4. Download a model from a URL (Hugging Face / Civitai)"
+      },
+      "url": {
+        "JP": "Hugging Faceはファイルのページ（Files and versionsで開いたURL）、Civitaiはバージョンを選んだページかダウンロードリンクのURLを貼り付けます。",
+        "EN": "Paste the URL of the file page on Hugging Face (opened under Files and versions), or on Civitai the page with a version selected or the download link."
+      },
+      "folder": {
+        "JP": "保存先のフォルダー（一覧にない場合は入力できます）。",
+        "EN": "Destination folder (you can type one that is not in the list)."
+      },
+      "filename": {
+        "JP": "保存名（空欄なら配布元のファイル名）。",
+        "EN": "File name (leave empty to keep the name from the site)."
+      },
+      "sha256": {
+        "JP": "配布元が示すSHA256（任意。指定すると照合します）。",
+        "EN": "SHA256 published by the site (optional; verified when given)."
+      },
+      "token": {
+        "JP": "認証が必要なモデル: Colabのシークレット（鍵アイコン）に `HF_TOKEN` または `CIVITAI_TOKEN` を登録してONにします。",
+        "EN": "Models that need authentication: register `HF_TOKEN` or `CIVITAI_TOKEN` in Colab Secrets (the key icon) and turn this on."
+      },
+      "skipped": {
+        "JP": "取得する場合は、URLを入力しDOWNLOAD_NOWをONにして実行してください。",
+        "EN": "To download, enter a URL, check DOWNLOAD_NOW and run the cell."
+      }
+    },
+    "refresh": {
+      "title": {
+        "JP": "5. Driveへ手動で置いたモデルを反映",
+        "EN": "5. Load models you uploaded to Drive"
+      },
+      "done": {
+        "JP": "接続中の場合はComfyUIの画面を再読み込みしてください。同名のモデルを置き換えた場合は、10で停止（FLUSH_AND_UNMOUNTはOFF）してから6-1〜6-3のいずれかを実行します。",
+        "EN": "If you are connected, reload the ComfyUI page. If you replaced a model that has the same name, stop with cell 10 (FLUSH_AND_UNMOUNT off) and run one of cells 6-1 to 6-3 again."
+      },
+      "skipped": {
+        "JP": "Driveへ手動でモデルを追加したときに、REFRESH_MODELSをONにして実行してください。",
+        "EN": "After adding models to Drive by hand, check REFRESH_MODELS and run the cell."
+      }
+    },
+    "connecting": {
+      "JP": [
+        "## 起動と接続",
+        "",
+        "接続方法を1つ選んで実行します。別の方法へ切り替えるときは、10で停止（`FLUSH_AND_UNMOUNT` はOFF）してから実行します。初回の表示には1分前後かかることがあります。",
+        "",
+        "- **6-1 プライベートURL:** このノートブックを開いているブラウザーで使う場合。このノートブックを実行しているGoogleアカウントでログインしたブラウザーからだけ開けます。外部には公開しません。Comfy Desktopからは接続できません。",
+        "- **6-2 公開URL:** Comfy Desktopの **Remote Connection** や別の端末から使う場合。表示されたURLを開き、ノートブックに表示されたコードを入力した端末だけが接続できます。コードは10分間・1回だけ有効で、URLは10で停止すると無効になります。",
+        "- **6-3 独自ドメインURL:** 自分のドメインの固定URLで、Comfy Desktopや別の端末から使う場合。Cloudflare Accessでログインした、許可済みのアカウントだけが接続できます。Cloudflareのアカウントとドメイン、事前の設定が必要です。",
+        "- Desktopでは、接続の設定で **Auto-download outputs** をONにすると生成物がPCへ保存されます。ブラウザーで使った場合や取得し損ねた出力は、9でまとめて回収できます。",
+        "- 画面が表示されない場合は、7の接続診断で止まっている箇所を確認できます。"
+      ],
+      "EN": [
+        "## Starting and connecting",
+        "",
+        "Choose one way to connect and run its cell. To switch to another, stop with cell 10 (`FLUSH_AND_UNMOUNT` off) first. The first load can take about a minute.",
+        "",
+        "- **6-1 Private URL:** for the browser this notebook is open in. Only a browser signed in to the Google account that runs this notebook can open it. Nothing is exposed to the outside. Comfy Desktop cannot connect this way.",
+        "- **6-2 Public URL:** for the **Remote Connection** of Comfy Desktop or another device. Open the URL that is shown; only a device where you enter the code shown in the notebook can connect. A code works once, for 10 minutes, and the URL stops working when you stop with cell 10.",
+        "- **6-3 Custom domain URL:** for Comfy Desktop or another device, at a fixed URL on your domain. Only accounts you allowed, signed in through Cloudflare Access, can connect. Needs a Cloudflare account, a domain and some setup beforehand.",
+        "- In Desktop, turn on **Auto-download outputs** in the connection settings to save generated files to your PC. If you used a browser, or some outputs were missed, collect them with cell 9.",
+        "- If the UI does not appear, the connection diagnosis in cell 7 shows where it stops."
+      ]
+    },
+    "start_colab": {
+      "title": {
+        "JP": "6-1. 起動して接続: プライベートURL（このブラウザーのみ）",
+        "EN": "6-1. Start and connect: Private URL (this browser only)"
+      }
+    },
+    "start_tunnel": {
+      "title": {
+        "JP": "6-2. 起動して接続: 公開URL",
+        "EN": "6-2. Start and connect: Public URL"
+      },
+      "new_code": {
+        "JP": "6-2で起動した後、別の端末を追加する（またはコードの期限が切れた）ときにONにして実行すると、新しいペアリングコードを発行します。",
+        "EN": "After starting with 6-2, check this and run the cell to issue a new pairing code, for another device or when the code has expired."
+      }
+    },
+    "start_access": {
+      "title": {
+        "JP": "6-3. 起動して接続: 独自ドメインURL",
+        "EN": "6-3. Start and connect: Custom domain URL"
+      },
+      "setup": {
+        "JP": "事前にCloudflare Zero Trustで、名前付きトンネル（公開ホスト名の転送先は `http://127.0.0.1:8189`）と、そのホスト名を保護するAccessアプリケーションを作成します。Colabのシークレットに、トンネルのトークン（`eyJ` で始まる文字列）を `CF_TUNNEL_TOKEN`、AccessアプリケーションのApplication Audience (AUD) Tag（64桁）を `CF_ACCESS_AUD` の名前で登録し、このノートブックからのアクセスを許可してください。",
+        "EN": "Beforehand, in Cloudflare Zero Trust, create a named tunnel (public hostname pointing to `http://127.0.0.1:8189`) and an Access application that protects that hostname. In Colab Secrets, register the tunnel token (the string that starts with `eyJ`) as `CF_TUNNEL_TOKEN` and the Application Audience (AUD) Tag of the Access application (64 characters) as `CF_ACCESS_AUD`, and allow this notebook to read them."
+      },
+      "hostname": {
+        "JP": "トンネルの公開ホスト名（例: `comfy.example.com`）。",
+        "EN": "Public hostname of the tunnel (for example `comfy.example.com`)."
+      }
+    },
+    "status": {
+      "title": {
+        "JP": "7. 保存状況とログ / 診断",
+        "EN": "7. Save status and logs / diagnosis"
+      },
+      "diagnosis": {
+        "JP": "画面の表示に必要な通信を、ComfyUI本体・認証プロキシ・公開URL（6-2のみ）の順に試します。",
+        "EN": "Tries the requests the UI needs, in order: ComfyUI, the auth proxy, the public URL (6-2 only)."
+      },
+      "isolation": {
+        "JP": "ComfyUI用のユーザーから届くローカルサービスを一覧表示します。",
+        "EN": "Lists the local services that the ComfyUI user can reach."
+      },
+      "no_status": {
+        "JP": "保存状況はまだありません。",
+        "EN": "No save status yet."
+      }
+    },
+    "saving": {
+      "JP": [
+        "## 保存と終了",
+        "",
+        "環境（ComfyUI本体・カスタムノード・設定・依存関係の一覧）は自動でDriveへ保存され、次回の3で復元されます。直前の変更を確実に残したいときは8を使います。生成物はDriveへ保存されません。",
+        "",
+        "終了するときは、PCへの出力の取得を確認してから10を実行し、完了の表示を確認してからランタイムを削除してください。"
+      ],
+      "EN": [
+        "## Saving and finishing",
+        "",
+        "The environment (ComfyUI itself, custom nodes, settings and the list of dependencies) is saved to Drive automatically and restored by cell 3 next time. Use cell 8 when you want to be sure the latest changes are saved. Generated files are not saved to Drive.",
+        "",
+        "When you finish, make sure your outputs are on your PC, run cell 10, and wait for its completion message before you delete the runtime."
+      ]
+    },
+    "save": {
+      "title": {
+        "JP": "8. 環境を今すぐDriveへ保存",
+        "EN": "8. Save the environment to Drive now"
+      },
+      "done": {
+        "JP": "環境と新しいモデルをDriveへ保存しました。",
+        "EN": "Saved the environment and new models to Drive."
+      },
+      "skipped": {
+        "JP": "保存する場合は、SAVE_NOWをONにして実行してください。",
+        "EN": "To save, check SAVE_NOW and run the cell."
+      }
+    },
+    "zip": {
+      "title": {
+        "JP": "9. 生成物をZIPでPCへダウンロード",
+        "EN": "9. Download generated files to your PC as a ZIP"
+      },
+      "skipped": {
+        "JP": "回収する場合は、DOWNLOAD_OUTPUT_ZIPをONにして実行してください。",
+        "EN": "To collect them, check DOWNLOAD_OUTPUT_ZIP and run the cell."
+      }
+    },
+    "stop": {
+      "title": {
+        "JP": "10. 保存して停止",
+        "EN": "10. Save and stop"
+      },
+      "unmount": {
+        "JP": "Driveへの書き込みを完了して接続を解除する（ランタイムを削除する前はON。同じランタイムで6-1〜6-3のいずれかから再開するならOFF）。",
+        "EN": "Finish writing to Drive and disconnect it (on before deleting the runtime; off if you will start again from one of cells 6-1 to 6-3 on the same runtime)."
+      },
+      "unmounted": {
+        "JP": "Driveへの書き込みが完了しました。ランタイムを削除できます。",
+        "EN": "Finished writing to Drive. You can delete the runtime."
+      },
+      "still_mounted": {
+        "JP": "Driveは接続したままです。ランタイムを削除する前に、FLUSH_AND_UNMOUNTをONにして実行してください。",
+        "EN": "Drive is still connected. Before deleting the runtime, run this cell with FLUSH_AND_UNMOUNT checked."
+      },
+      "skipped": {
+        "JP": "終了する場合は、STOP_NOWをONにして実行してください。",
+        "EN": "To finish, check STOP_NOW and run the cell."
+      }
+    },
+    "updating": {
+      "JP": [
+        "## ComfyUIの更新",
+        "",
+        "保存した環境を復元すると、ComfyUIは保存したときのバージョンのままです。カスタムノード・設定・ワークフローを残したままComfyUI本体を更新するには11を実行します。",
+        "",
+        "- **手順:** 0をONにして実行（または1の `COMFY_REF` に更新先のバージョンを入力）→ 1 → 2 → 3 → 11 → 6-1〜6-3 のいずれか。起動中の場合は、10で停止（`FLUSH_AND_UNMOUNT` はOFF）してから 0 → 1 → 11 → 6-1〜6-3 のいずれか を実行します。",
+        "- 更新後の環境はDriveへ保存され、次回からは新しいバージョンで復元されます。",
+        "- 更新に失敗した場合（新しいバージョンとカスタムノードの依存関係が合わない場合など）は元のバージョンへ戻し、Driveの保存内容は変えません。"
+      ],
+      "EN": [
+        "## Updating ComfyUI",
+        "",
+        "A restored environment keeps the ComfyUI version it was saved with. Use cell 11 to update ComfyUI itself while keeping your custom nodes, settings and workflows.",
+        "",
+        "- **Steps:** run cell 0 with its box checked (or enter the version to update to as `COMFY_REF` in cell 1) → 1 → 2 → 3 → 11 → one of 6-1 to 6-3. If ComfyUI is running, stop it with cell 10 (`FLUSH_AND_UNMOUNT` off), then run 0 → 1 → 11 → one of 6-1 to 6-3.",
+        "- The updated environment is saved to Drive and is the one restored from then on.",
+        "- If the update fails (for example when the dependencies of a custom node do not fit the new version), ComfyUI is put back to its previous version and nothing on Drive changes."
+      ]
+    },
+    "update": {
+      "title": {
+        "JP": "11. ComfyUIを更新（カスタムノードと設定は維持）",
+        "EN": "11. Update ComfyUI (custom nodes and settings are kept)"
+      },
+      "note": {
+        "JP": "`COMFY_REF`（0で最新リリースにした場合はそのバージョン）へ更新します。ComfyUIを停止した状態で実行してください。",
+        "EN": "Updates to `COMFY_REF` (the latest release if you chose it in cell 0). Run this while ComfyUI is stopped."
+      },
+      "skipped": {
+        "JP": "更新する場合は、UPDATE_COMFYUI_NOWをONにして実行してください。",
+        "EN": "To update, check UPDATE_COMFYUI_NOW and run the cell."
+      }
+    },
+    "security": {
+      "JP": [
+        "## セキュリティについて",
+        "",
+        "- 6-1は外部に公開しません。6-2と6-3で公開されるのは認証付きの入口だけです。6-2ではペアリングコードを入力していない端末、6-3ではCloudflare Accessの署名がない要求を拒否し、ComfyUI本体は外部から直接は見えません。トンネルには [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) を使います（6-2は [Quick Tunnel](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)）。",
+        "- ComfyUIとカスタムノードは権限を下げた専用ユーザーで動き、Driveのマウント先と接続用の秘密情報には届きません。ただしコンテナーによる隔離ではありません。Colab自身の管理用サービスへはこのユーザーからも接続できるため、Colabを狙った悪意あるノードまでは防げません。",
+        "- 接続できた利用者はカスタムノードを導入でき、保存した環境に含まれるノードは次回も実行されます。不審なノードを入れてしまった場合は、1の `RESTORE_SAVED_ENVIRONMENT` をOFFにして新しい環境で始めてください。",
+        "- Colabの「Driveをマウント」ボタンは使わず、このノートブックのセットアップだけでDriveへ接続してください。"
+      ],
+      "EN": [
+        "## Security",
+        "",
+        "- Cell 6-1 exposes nothing to the outside. With cells 6-2 and 6-3 only an authenticated entrance is exposed: 6-2 rejects a device that has not entered a pairing code, 6-3 rejects a request without the signature of Cloudflare Access, and ComfyUI itself cannot be reached from outside. The tunnel is a [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) (a [Quick Tunnel](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) for 6-2).",
+        "- ComfyUI and custom nodes run as a dedicated user with reduced privileges that cannot reach the Drive mount or the connection secrets. This is not container isolation: the management services Colab itself runs are reachable by that user, so it does not stop a malicious node written to target Colab.",
+        "- Anyone who can connect can install custom nodes, and the nodes in the saved environment run again next time. If you installed a node you do not trust, turn off `RESTORE_SAVED_ENVIRONMENT` in cell 1 and start with a fresh environment.",
+        "- Do not use the \"Mount Drive\" button of Colab; connect Drive only through the setup in this notebook."
+      ]
+    }
+  },
+  "runtime": {
+    "common": {
+      "none": {
+        "JP": "なし",
+        "EN": "none"
+      },
+      "unknown": {
+        "JP": "不明",
+        "EN": "unknown"
+      },
+      "present": {
+        "JP": "あり",
+        "EN": "present"
+      },
+      "yes": {
+        "JP": "あり",
+        "EN": "yes"
+      },
+      "no": {
+        "JP": "なし",
+        "EN": "no"
+      }
+    },
+    "path": {
+      "use_slashes": {
+        "JP": "相対パスには / を使い、ドライブ名を含めないでください。",
+        "EN": "Use / in relative paths and do not include a drive name."
+      },
+      "unsafe": {
+        "JP": "安全な相対パスを指定してください。",
+        "EN": "Specify a safe relative path."
+      },
+      "outside_folder": {
+        "JP": "保存先が指定フォルダー外を指しています。",
+        "EN": "The destination points outside the designated folder."
+      },
+      "symlink": {
+        "JP": "保存先にシンボリックリンクがあります。",
+        "EN": "The destination contains a symbolic link."
+      }
+    },
+    "command": {
+      "running": {
+        "JP": "実行中: ",
+        "EN": "Running: "
+      },
+      "failed": {
+        "JP": "{stage} が失敗しました: {failure}",
+        "EN": "{stage} failed: {failure}"
+      },
+      "exit_code": {
+        "JP": "{stage} が終了コード {code} で失敗しました。直前の出力を確認してください。",
+        "EN": "{stage} failed with exit code {code}. Check the output above."
+      },
+      "done": {
+        "JP": "完了: {stage}（{seconds:.0f}秒）",
+        "EN": "Done: {stage} ({seconds:.0f}s)"
+      },
+      "timed_out": {
+        "JP": "時間内に終わりませんでした",
+        "EN": "it did not finish in time"
+      },
+      "output_limit": {
+        "JP": "出力が上限を超えました",
+        "EN": "it produced more output than allowed"
+      }
+    },
+    "user": {
+      "processes_remain": {
+        "JP": "ComfyUI用ユーザーのプロセスを終了できませんでした。ランタイムを削除して接続し直してください。",
+        "EN": "Could not stop the processes of the ComfyUI user. Delete the runtime and connect again."
+      },
+      "setpriv_missing": {
+        "JP": "{setpriv} がありません。権限を下げてComfyUIを実行できないため中止します。",
+        "EN": "{setpriv} is missing. Stopping because ComfyUI cannot be run with reduced privileges."
+      }
+    },
+    "app": {
+      "no_outputs": {
+        "JP": "回収する生成ファイルがありません。",
+        "EN": "There are no generated files to collect."
+      },
+      "failed": {
+        "JP": "{action} に失敗しました: {failure}",
+        "EN": "{action} failed: {failure}"
+      },
+      "failed_detail": {
+        "JP": "{action} に失敗しました: ",
+        "EN": "{action} failed: "
+      }
+    },
+    "venv": {
+      "pip_fallback": {
+        "JP": "ノートブック側のpipから仮想環境へ導入できませんでした。OSのensurepipを使います。",
+        "EN": "The notebook pip could not install into the virtual environment. Falling back to the system ensurepip."
+      },
+      "ensurepip_missing": {
+        "JP": "Python {version}のensurepipが不足しています。{package}をインストールします。",
+        "EN": "ensurepip is missing for Python {version}. Installing {package}."
+      },
+      "package_failed": {
+        "JP": "{package}をインストールできませんでした。Colabで apt-cache policy {package} を実行し、提供バージョンとAPTのエラー出力を確認してください。",
+        "EN": "Could not install {package}. Run apt-cache policy {package} in Colab and check the available version and the APT error output."
+      },
+      "ensurepip_unavailable": {
+        "JP": "{package}のインストール後も {python} からensurepipを参照できません。Pythonのインストール先とAPTパッケージを確認してください。",
+        "EN": "After installing {package}, ensurepip is still not available from {python}. Check the Python installation and the APT package."
+      }
+    },
+    "drive": {
+      "needs_root": {
+        "JP": "Driveの保護にはColabのroot権限を持つLinuxランタイムが必要です。",
+        "EN": "Protecting Drive requires a Colab Linux runtime with root privileges."
+      },
+      "private_symlink": {
+        "JP": "保護ディレクトリにシンボリックリンクがあります。",
+        "EN": "The protected directory contains a symbolic link."
+      },
+      "private_owner": {
+        "JP": "保護ディレクトリの所有者がrootではありません。",
+        "EN": "The protected directory is not owned by root."
+      },
+      "mounted_elsewhere": {
+        "JP": "別の場所にDriveがマウントされています。ランタイムを削除し、このノートブックだけでマウントしてください。",
+        "EN": "Drive is already mounted somewhere else. Delete the runtime and mount it only from this notebook."
+      },
+      "no_mydrive": {
+        "JP": "Google DriveのMyDriveを確認できません。",
+        "EN": "Could not find MyDrive in Google Drive."
+      },
+      "not_mounted": {
+        "JP": "Driveがマウントされていません。セットアップから実行してください。",
+        "EN": "Drive is not mounted. Run the notebook from setup."
+      }
+    },
+    "models": {
+      "synced": {
+        "JP": "Driveからモデルを反映しました: {copied}ファイル",
+        "EN": "Models copied from Drive: {copied} file(s)"
+      }
+    },
+    "environment": {
+      "archive_special_files": {
+        "JP": "環境アーカイブにリンクまたは特殊ファイルが含まれています。",
+        "EN": "The environment archive contains links or special files."
+      },
+      "archive_needs_data_filter": {
+        "JP": "安全なアーカイブ復元にはPython 3.12以降（またはdata_filter搭載版）が必要です。",
+        "EN": "Restoring the archive safely requires Python 3.12 or later (or a version with data_filter)."
+      },
+      "busy": {
+        "JP": "環境が変更中です。インストール完了後に保存を再実行してください。",
+        "EN": "The environment is being modified. Save again after the installation finishes."
+      },
+      "unpinned_lock": {
+        "JP": "依存関係一覧に固定バージョン以外の行（editable・ローカルパス・pipオプション）があります。通常のpipパッケージへ置き換えてください。",
+        "EN": "The dependency list contains lines other than pinned versions (editable installs, local paths or pip options). Replace them with regular pip packages."
+      }
+    },
+    "cloudflared": {
+      "download_failed": {
+        "JP": "cloudflaredのダウンロードに失敗しました。",
+        "EN": "Failed to download cloudflared."
+      },
+      "sha256_mismatch": {
+        "JP": "cloudflaredのSHA256が公開値と一致しません。実行を中止します。",
+        "EN": "The SHA256 of cloudflared does not match the published value. Aborting."
+      }
+    },
+    "setup": {
+      "not_colab": {
+        "JP": "このセットアップはroot権限のGoogle Colab Linux GPUランタイム専用です。",
+        "EN": "This setup only runs on a Google Colab Linux GPU runtime with root privileges."
+      },
+      "already_done": {
+        "JP": "このランタイムはセットアップ済みです。再セットアップにはランタイムを削除して接続し直してください。",
+        "EN": "This runtime is already set up. To set up again, delete the runtime and reconnect."
+      },
+      "invalid_ref": {
+        "JP": "ComfyUIのrefが不正です。",
+        "EN": "Invalid ComfyUI ref."
+      },
+      "interval_too_short": {
+        "JP": "保存間隔は60秒以上にしてください。",
+        "EN": "The save interval must be at least 60 seconds."
+      },
+      "invalid_apt_package": {
+        "JP": "APTパッケージ名が不正です。",
+        "EN": "Invalid APT package name."
+      },
+      "no_gpu": {
+        "JP": "Colabのランタイム設定でGPUを選択してください。",
+        "EN": "Select a GPU in the Colab runtime settings."
+      },
+      "fresh_environment": {
+        "JP": "保存済みの環境を復元せず、新しい環境を作成します。Drive上の保存は次回の保存から新しい世代に置き換わります。",
+        "EN": "Not restoring the saved environment; creating a new one. The next save starts a new generation on Drive."
+      },
+      "invalid_archive_name": {
+        "JP": "保存情報のアーカイブ名が不正です。",
+        "EN": "The archive name in the save record is invalid."
+      },
+      "python_changed": {
+        "JP": "保存時とColabのPythonバージョンが違います。環境移行が必要です。既存保存を上書きしません。",
+        "EN": "The Python version differs from the one the environment was saved with. The environment must be migrated. The existing save is not overwritten."
+      },
+      "archive_sha256_mismatch": {
+        "JP": "保存アーカイブのSHA256が一致しません。復元を中止します。",
+        "EN": "The SHA256 of the saved archive does not match. Restore aborted."
+      },
+      "restored": {
+        "JP": "Drive上の環境を復元しました。保存時刻:",
+        "EN": "Restored the environment from Drive. Saved at:"
+      },
+      "restored_nodes": {
+        "JP": "復元したカスタムノード:",
+        "EN": "Restored custom nodes:"
+      },
+      "source_incomplete": {
+        "JP": "復元したComfyUIソースが不完全です。",
+        "EN": "The restored ComfyUI source is incomplete."
+      },
+      "saved_apt_packages": {
+        "JP": "保存時に使われていた追加のOSパッケージ:",
+        "EN": "Additional OS packages used when the environment was saved:"
+      },
+      "saved_apt_packages_hint": {
+        "JP": "必要な場合は、1のAPT_PACKAGESへ追加して新しいランタイムで実行し直してください（自動では導入しません）。",
+        "EN": "If you need them, add them to APT_PACKAGES in cell 1 and run again on a new runtime (they are not installed automatically)."
+      },
+      "no_torch": {
+        "JP": "Colabの標準PyTorch CUDA環境を検出できません。GPUランタイムを確認してください。",
+        "EN": "Could not detect the standard Colab PyTorch CUDA environment. Check the GPU runtime."
+      },
+      "invalid_torch_mirror": {
+        "JP": "保存されたPyTorchミラーが不正です。",
+        "EN": "The saved PyTorch mirror is invalid."
+      },
+      "copying_models": {
+        "JP": "DriveのモデルをColabへコピーします（モデル全体のローカル空き容量が必要です）。",
+        "EN": "Copying models from Drive to Colab (needs local free space for all models)."
+      },
+      "done": {
+        "JP": "セットアップ完了。Driveの保存先: MyDrive/",
+        "EN": "Setup complete. Models folder on Drive: MyDrive/"
+      }
+    },
+    "download": {
+      "hf_repository": {
+        "JP": "Hugging FaceのリポジトリIDを author/repository 形式で指定してください。",
+        "EN": "Specify the Hugging Face repository ID as author/repository."
+      },
+      "hf_revision": {
+        "JP": "revisionを指定してください。",
+        "EN": "Specify a revision."
+      },
+      "civitai_version": {
+        "JP": "CivitaiのモデルバージョンIDを正の整数で指定してください。",
+        "EN": "Specify the Civitai model version ID as a positive integer."
+      },
+      "unknown_source": {
+        "JP": "ダウンロード元をHugging FaceまたはCivitaiから選択してください。",
+        "EN": "Choose Hugging Face or Civitai as the download source."
+      },
+      "hf_url": {
+        "JP": "Hugging Faceは、Files and versionsで開いたファイルのURL（…/blob/… または …/resolve/…）を指定してください。",
+        "EN": "For Hugging Face, give the URL of a file opened under Files and versions (…/blob/… or …/resolve/…)."
+      },
+      "civitai_url": {
+        "JP": "Civitaiは、バージョンを選んだページのURL（…?modelVersionId=…）かダウンロードリンクを指定してください。",
+        "EN": "For Civitai, give the URL of the page with a version selected (…?modelVersionId=…) or the download link."
+      },
+      "unsupported_url": {
+        "JP": "https://huggingface.co/ または https://civitai.com/ のURLを指定してください。",
+        "EN": "Give a URL on https://huggingface.co/ or https://civitai.com/."
+      },
+      "filename_has_folder": {
+        "JP": "保存名にフォルダーを含めないでください。保存先はMODEL_FOLDERで指定します。",
+        "EN": "Do not include a folder in the file name. Set the destination with MODEL_FOLDER."
+      },
+      "not_https": {
+        "JP": "ダウンロード先には認証情報を含まないHTTPS URLが必要です。",
+        "EN": "The download address must be an HTTPS URL without credentials."
+      },
+      "local_redirect": {
+        "JP": "ローカルサービスへのリダイレクトを拒否しました。",
+        "EN": "Refused a redirect to a local service."
+      },
+      "unresolved_host": {
+        "JP": "ダウンロード先のホスト名を解決できません。",
+        "EN": "Could not resolve the host name of the download address."
+      },
+      "private_redirect": {
+        "JP": "プライベートIPへのリダイレクトを拒否しました。",
+        "EN": "Refused a redirect to a private IP address."
+      },
+      "redirect_without_target": {
+        "JP": "ダウンロードの転送先がありません。",
+        "EN": "The download redirect has no destination."
+      },
+      "http_error": {
+        "JP": "モデル取得失敗（HTTP {status}）。利用条件・アクセス権・トークンを確認してください。",
+        "EN": "Model download failed (HTTP {status}). Check the terms of use, your access rights and the token."
+      },
+      "not_a_model": {
+        "JP": "モデルではなくHTML/JSONが返されました。ファイル指定を確認してください。",
+        "EN": "Received HTML/JSON instead of a model. Check which file you specified."
+      },
+      "empty": {
+        "JP": "ダウンロードファイルが空です。",
+        "EN": "The downloaded file is empty."
+      },
+      "too_many_redirects": {
+        "JP": "リダイレクト回数が上限に達しました。",
+        "EN": "Too many redirects."
+      },
+      "host_not_allowed": {
+        "JP": "ダウンロード元はhuggingface.coまたはcivitai.comのみです。",
+        "EN": "Downloads are only allowed from huggingface.co or civitai.com."
+      },
+      "url_has_query": {
+        "JP": "元URLにクエリや接続鍵を含めないでください。入力フォームからURLを生成してください。",
+        "EN": "Do not include a query or access key in the source URL. Generate the URL from the input form."
+      },
+      "invalid_sha256": {
+        "JP": "SHA256は64桁の16進数で指定してください。",
+        "EN": "SHA256 must be 64 hexadecimal digits."
+      },
+      "exists": {
+        "JP": "Driveに同名モデルが存在します。別の保存名を指定してください。",
+        "EN": "A model with the same name already exists on Drive. Choose a different file name."
+      },
+      "sha256_mismatch": {
+        "JP": "モデルのSHA256が一致しません。確定ファイルとして保存しません。",
+        "EN": "The SHA256 of the model does not match. It is not saved."
+      },
+      "no_filename": {
+        "JP": "配布元からファイル名を取得できませんでした。保存名を指定してください。",
+        "EN": "The site did not provide a file name. Specify one."
+      },
+      "exists_not_overwritten": {
+        "JP": "Driveに同名モデルが存在します。上書きしません。別の保存名を指定してください。",
+        "EN": "A model with the same name already exists on Drive. It is not overwritten. Choose a different file name."
+      },
+      "saved": {
+        "JP": "Driveへ保存し、Colabへ反映しました:",
+        "EN": "Saved to Drive and copied to Colab:"
+      },
+      "connection_failed": {
+        "JP": "モデルのダウンロード通信に失敗しました。接続・アクセス権を確認してください。",
+        "EN": "The model download connection failed. Check the connection and your access rights."
+      }
+    },
+    "proxy": {
+      "unauthorized": {
+        "JP": "認証が必要です。ノートブックが表示したURLをブラウザーで開き、ペアリングコードを入力してください。",
+        "EN": "Authentication required. Open the URL shown by the notebook in a browser and enter the pairing code."
+      },
+      "cross_origin": {
+        "JP": "異なるOriginからのアクセスは許可されていません。",
+        "EN": "Access from a different origin is not allowed."
+      },
+      "websocket_error": {
+        "JP": "WebSocket中継エラー:",
+        "EN": "WebSocket relay error:"
+      },
+      "upstream_down": {
+        "JP": "ComfyUIが起動中、または停止しています。",
+        "EN": "ComfyUI is starting or stopped."
+      },
+      "origin_rejected": {
+        "JP": "別のサイトからの要求を拒否しました: Origin {origin} / Host {host}",
+        "EN": "Refused a request from another site: Origin {origin} / Host {host}"
+      },
+      "access_required": {
+        "JP": "Cloudflare Accessの認証を確認できません。公開ホスト名のURLから接続してください。ログイン後もこの表示が出る場合は、シークレット CF_ACCESS_AUD のAUDタグを確認してください。",
+        "EN": "The Cloudflare Access sign-in could not be verified. Connect through the URL of the public hostname. If this appears after signing in, check the AUD tag in the secret CF_ACCESS_AUD."
+      }
+    },
+    "diagnosis": {
+      "route": {
+        "JP": "  [{mark}] {status} {seconds:6.2f}秒 {size:>9}B {route}",
+        "EN": "  [{mark}] {status} {seconds:6.2f}s {size:>9}B {route}"
+      },
+      "assets": {
+        "JP": "  [{mark}] 画面のJS/CSS {total}件: 失敗{failed}件 / 展開後{megabytes:.1f}MB / {elapsed:.2f}秒 / 圧縮あり{compressed}件",
+        "EN": "  [{mark}] UI JS/CSS {total} files: {failed} failed / {megabytes:.1f}MB uncompressed / {elapsed:.2f}s / {compressed} compressed"
+      },
+      "failed_asset": {
+        "JP": "       {status} {seconds:.2f}秒 {route}",
+        "EN": "       {status} {seconds:.2f}s {route}"
+      },
+      "websocket": {
+        "JP": "  [{mark}] WebSocket 最初のメッセージ: {kind}",
+        "EN": "  [{mark}] WebSocket first message: {kind}"
+      },
+      "not_running": {
+        "JP": "ComfyUIが起動していません。6-1〜6-3のいずれかを実行してから診断してください。",
+        "EN": "ComfyUI is not running. Run one of cells 6-1 to 6-3 before the diagnosis."
+      },
+      "target_comfyui": {
+        "JP": "ComfyUI本体（127.0.0.1:8188）",
+        "EN": "ComfyUI (127.0.0.1:8188)"
+      },
+      "target_proxy": {
+        "JP": "認証プロキシ（127.0.0.1:8189）",
+        "EN": "Auth proxy (127.0.0.1:8189)"
+      },
+      "target_public": {
+        "JP": "公開URL（Cloudflare経由）",
+        "EN": "Public URL (via Cloudflare)"
+      },
+      "failed_at": {
+        "JP": "結果: {label} で失敗しています。ここより手前は正常です。",
+        "EN": "Result: failing at {label}. Everything before it is fine."
+      },
+      "all_ok": {
+        "JP": "結果: Colab側は公開URLまで正常です。画面が出ない場合はPC側（ブラウザー拡張・広告ブロック・セキュリティソフト）を確認してください。",
+        "EN": "Result: everything on the Colab side works up to the public URL. If the UI does not appear, check your PC (browser extensions, ad blockers, security software)."
+      },
+      "colab_ok": {
+        "JP": "結果: ComfyUI本体と認証プロキシは正常です。Colabのポート転送はここからは確認できません。画面が出ない場合は、ブラウザーがこのノートブックと同じGoogleアカウントでログインしているか、サードパーティCookieの制限やブラウザー拡張が妨げていないかを確認してください。",
+        "EN": "Result: ComfyUI and the auth proxy work. Colab's port forwarding cannot be checked from here. If the UI does not appear, check that the browser is signed in to the same Google account as this notebook, and that third-party cookie restrictions or browser extensions are not in the way."
+      },
+      "access_ok": {
+        "JP": "結果: ComfyUI本体は正常です。認証プロキシとCloudflare側は、Accessのログインが必要なためここからは確認できません。画面が出ない場合は、7のtunnel.logと、Cloudflareのトンネル・Accessアプリケーションの設定を確認してください。",
+        "EN": "Result: ComfyUI works. The auth proxy and the Cloudflare side cannot be checked from here, because they need an Access sign-in. If the UI does not appear, check tunnel.log in cell 7 and the tunnel and Access application settings in Cloudflare."
+      }
+    },
+    "isolation": {
+      "heading": {
+        "JP": "アプリ用ユーザー（{user}）から到達できるローカルサービス:",
+        "EN": "Local services reachable by the application user ({user}):"
+      },
+      "comfyui": {
+        "JP": "ComfyUI本体",
+        "EN": "ComfyUI"
+      },
+      "proxy": {
+        "JP": "認証プロキシ",
+        "EN": "auth proxy"
+      },
+      "unix_sockets": {
+        "JP": "接続できたUnixソケット（待受{listening}件中{reachable}件）:",
+        "EN": "Unix sockets that accepted a connection ({reachable} of {listening} listening):"
+      },
+      "kernel": {
+        "JP": "カーネル:",
+        "EN": "Kernel:"
+      },
+      "root_capabilities": {
+        "JP": "rootの権限:",
+        "EN": "root capabilities:"
+      },
+      "no_command": {
+        "JP": "コマンドなし",
+        "EN": "command not found"
+      },
+      "available": {
+        "JP": "利用可",
+        "EN": "available"
+      },
+      "unavailable": {
+        "JP": "利用不可",
+        "EN": "unavailable"
+      }
+    },
+    "supervisor": {
+      "autosave_failed": {
+        "JP": "環境の自動保存に失敗。終了前に保存セルを実行してください。",
+        "EN": "Automatic save of the environment failed. Run the save cell before you finish."
+      },
+      "save_before_restart_failed": {
+        "JP": "再起動前の保存失敗",
+        "EN": "Save before restart failed"
+      },
+      "restarting": {
+        "JP": "ComfyUIの終了を検出。10秒後に再起動します。",
+        "EN": "ComfyUI exited. Restarting in 10 seconds."
+      },
+      "restart_limit": {
+        "JP": "ComfyUIの再起動上限に達しました。comfy.logを確認してください。",
+        "EN": "ComfyUI reached the restart limit. Check comfy.log."
+      }
+    },
+    "start": {
+      "already_running": {
+        "JP": "既に起動済みです。再起動は停止セルの後に実行してください。",
+        "EN": "Already running. To restart, run the stop cell first."
+      },
+      "proxy_exited_port": {
+        "JP": "認証プロキシが終了しました。8189番ポートが使用中の可能性があります。ログセルのproxy.logを確認してください。",
+        "EN": "The auth proxy exited. Port 8189 may be in use. Check proxy.log in the log cell."
+      },
+      "proxy_not_started": {
+        "JP": "認証プロキシが起動しませんでした。",
+        "EN": "The auth proxy did not start."
+      },
+      "comfyui_timeout": {
+        "JP": "ComfyUIが5分以内に起動しませんでした。ログセルを確認してください。",
+        "EN": "ComfyUI did not start within 5 minutes. Check the log cell."
+      },
+      "proxy_exited": {
+        "JP": "認証プロキシが終了しました。ログセルのproxy.logを確認してください。",
+        "EN": "The auth proxy exited. Check proxy.log in the log cell."
+      },
+      "url_auto_download": {
+        "JP": "Remote Connectionでは Auto-download outputs を有効にし、PC上の保存先を設定してください。",
+        "EN": "For Remote Connection, enable Auto-download outputs and set the output folder on your PC."
+      },
+      "tunnel_exited": {
+        "JP": "Quick Tunnelが終了しました。tunnel.logを確認してください。",
+        "EN": "Quick Tunnel exited. Check tunnel.log."
+      },
+      "no_tunnel_url": {
+        "JP": "Quick Tunnel URLを取得できませんでした。",
+        "EN": "Could not get the Quick Tunnel URL."
+      },
+      "tunnel_heading": {
+        "JP": "Comfy Desktop > Remote Connection に入力するURL（通常のブラウザーでも開けます）:",
+        "EN": "URL to enter in Comfy Desktop > Remote Connection (a regular browser can open it too):"
+      },
+      "pairing_code": {
+        "JP": "ペアリングコード: {code}（{minutes}分間・1回だけ有効）",
+        "EN": "Pairing code: {code} (works once, for {minutes} minutes)"
+      },
+      "pairing_note": {
+        "JP": "URLを開くとコードの入力画面が出ます。別の端末を追加するときは、6-2の NEW_PAIRING_CODE をONにして実行してください。停止するとURLと接続済みの端末は無効になります。",
+        "EN": "Opening the URL asks for the code. To add another device, run cell 6-2 with NEW_PAIRING_CODE checked. Stopping ends the URL and every connected device."
+      },
+      "colab_heading": {
+        "JP": "このブラウザーで開くURL（このノートブックを実行しているGoogleアカウントでだけ開けます）:",
+        "EN": "URL to open in this browser (only the Google account that runs this notebook can open it):"
+      },
+      "colab_note": {
+        "JP": "Comfy Desktopや別の端末からは接続できません。生成物はComfyUIの画面から保存するか、9で回収してください。",
+        "EN": "Comfy Desktop and other devices cannot connect this way. Save generated files from the ComfyUI page, or collect them with cell 9."
+      },
+      "colab_unavailable": {
+        "JP": "Colabのポート転送のアドレスを取得できませんでした。Colabのノートブック上で実行してください。",
+        "EN": "Could not get the address of Colab's port forwarding. Run this in a Colab notebook."
+      }
+    },
+    "stop": {
+      "saved": {
+        "JP": "Driveへの環境保存が完了しました。",
+        "EN": "The environment has been saved to Drive."
+      },
+      "done": {
+        "JP": "停止しました。生成ファイルはランタイム削除前にPCで確認してください。",
+        "EN": "Stopped. Check the generated files on your PC before deleting the runtime."
+      }
+    },
+    "update": {
+      "running": {
+        "JP": "ComfyUIが起動中です。10で停止（FLUSH_AND_UNMOUNTはOFF）してから実行してください。",
+        "EN": "ComfyUI is running. Stop it with cell 10 (FLUSH_AND_UNMOUNT off) first."
+      },
+      "unknown_ref": {
+        "JP": "ComfyUIに {ref} というバージョンが見つかりません。",
+        "EN": "ComfyUI has no version named {ref}."
+      },
+      "already": {
+        "JP": "ComfyUIは既に {version} です。",
+        "EN": "ComfyUI is already at {version}."
+      },
+      "starting": {
+        "JP": "ComfyUIを {previous} から {ref} へ更新します。",
+        "EN": "Updating ComfyUI from {previous} to {ref}."
+      },
+      "undone": {
+        "JP": "更新に失敗したため、元のバージョン（{version}）へ戻しました。Driveの保存内容は変わっていません。",
+        "EN": "The update failed, so ComfyUI was put back to {version}. Nothing on Drive has changed."
+      },
+      "undo_failed": {
+        "JP": "更新に失敗し、元のバージョンへも戻せませんでした。11をもう一度実行してください。",
+        "EN": "The update failed and ComfyUI could not be put back. Run cell 11 again."
+      },
+      "incomplete": {
+        "JP": "ComfyUIの更新が途中で止まっています。11をもう一度実行するか、ランタイムを削除してください（Driveには更新前の環境が残っています）。",
+        "EN": "An update of ComfyUI was left unfinished. Run cell 11 again, or delete the runtime (Drive still holds the environment from before the update)."
+      },
+      "resuming": {
+        "JP": "途中で止まった更新を元に戻します。",
+        "EN": "Undoing the update that was left unfinished."
+      },
+      "done": {
+        "JP": "ComfyUIを {previous} から {version} へ更新し、Driveへ保存しました。6-1〜6-3のいずれかを実行して起動してください。",
+        "EN": "Updated ComfyUI from {previous} to {version} and saved it to Drive. Run one of cells 6-1 to 6-3 to start it."
+      }
+    },
+    "pairing": {
+      "title": {
+        "JP": "ComfyUIへ接続",
+        "EN": "Connect to ComfyUI"
+      },
+      "prompt": {
+        "JP": "ノートブックに表示されたペアリングコードを入力してください。",
+        "EN": "Enter the pairing code shown in the notebook."
+      },
+      "button": {
+        "JP": "接続",
+        "EN": "Connect"
+      },
+      "wrong": {
+        "JP": "コードが違います。あと{remaining}回入力できます。",
+        "EN": "That code is not right. Tries left: {remaining}."
+      },
+      "closed": {
+        "JP": "このコードは使えません。ノートブックの6-2で NEW_PAIRING_CODE をONにして実行し、新しいコードを発行してください。",
+        "EN": "This code cannot be used. Run cell 6-2 of the notebook with NEW_PAIRING_CODE checked to issue a new one."
+      },
+      "not_running": {
+        "JP": "6-2で起動してから実行してください。",
+        "EN": "Start with cell 6-2 first."
+      }
+    },
+    "access": {
+      "invalid_hostname": {
+        "JP": "公開ホスト名が不正です。comfy.example.com の形式で指定してください。",
+        "EN": "Invalid public hostname. Enter it like comfy.example.com."
+      },
+      "invalid_audience": {
+        "JP": "AUDタグが不正です。Colabのシークレット CF_ACCESS_AUD に、AccessアプリケーションのApplication Audience (AUD) Tag（64桁の英数字）を登録してください。",
+        "EN": "Invalid AUD tag. Register the Application Audience (AUD) Tag of the Access application (64 characters) as CF_ACCESS_AUD in Colab Secrets."
+      },
+      "invalid_token": {
+        "JP": "トンネルのトークンが不正です。Colabのシークレット CF_TUNNEL_TOKEN に、eyJ で始まるトークンだけを登録してください。",
+        "EN": "Invalid tunnel token. Register only the token, which starts with eyJ, as CF_TUNNEL_TOKEN in Colab Secrets."
+      },
+      "tunnel_exited": {
+        "JP": "名前付きトンネルが終了しました。トークンが正しいか、7のtunnel.logを確認してください。",
+        "EN": "The named tunnel exited. Check that the token is right, and tunnel.log in cell 7."
+      },
+      "unprotected": {
+        "JP": "{hostname} でCloudflare Accessのログイン画面への転送を確認できませんでした（応答: {status}）。Accessアプリケーションがこのホスト名を保護しているか、DNSの設定が反映されているかを確認してください。設定の直後は、数分待ってから実行し直してください。起動していません。",
+        "EN": "Could not see {hostname} send visitors to the Cloudflare Access sign-in (answer: {status}). Check that an Access application protects this hostname and that its DNS record is in place. Right after changing the settings, wait a few minutes and run again. Nothing was started."
+      },
+      "heading": {
+        "JP": "Comfy Desktop > Remote Connection に入力するURL（通常のブラウザーでも開けます）:",
+        "EN": "URL to enter in Comfy Desktop > Remote Connection (a regular browser can open it too):"
+      },
+      "note": {
+        "JP": "開くとCloudflare Accessのログイン画面が出ます。許可したアカウントでログインした端末だけが接続できます。停止するとこのURLは応答しなくなります。",
+        "EN": "Opening it shows the Cloudflare Access sign-in. Only a device signed in with an account you allowed can connect. The URL stops answering when you stop."
+      },
+      "team": {
+        "JP": "このホスト名を保護しているAccessのチームドメイン: {team}",
+        "EN": "Access team domain protecting this hostname: {team}"
+      },
+      "wrong_target": {
+        "JP": "トンネルの公開ホスト名の転送先が http://127.0.0.1:8189 だけになっていません（現在の設定: {services}）。Cloudflareのトンネルの設定で、サービスの種類をHTTP、URLを 127.0.0.1:8189 にしてから実行し直してください。接続を中止しました。",
+        "EN": "The public hostnames of the tunnel do not all lead to http://127.0.0.1:8189 (current settings: {services}). In the tunnel settings in Cloudflare, set the service type to HTTP and the URL to 127.0.0.1:8189, then run again. Not connected."
+      },
+      "target_unknown": {
+        "JP": "注意: トンネルの転送先の設定を読み取れませんでした。Cloudflareのトンネルの設定で、公開ホスト名の転送先が http://127.0.0.1:8189 になっていることを確認してください。",
+        "EN": "Note: could not read where the tunnel leads. Check in the tunnel settings in Cloudflare that the public hostname points to http://127.0.0.1:8189."
+      }
+    }
+  }
+}

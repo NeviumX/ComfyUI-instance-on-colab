@@ -1,0 +1,9 @@
+.research/
+__pycache__/
+.venv/
+.pytest_cache/
+.pytest-temp/
+*.pyc
+
+# Private local documentation
+/docs/
