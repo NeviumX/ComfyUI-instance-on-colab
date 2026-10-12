@@ -4,10 +4,10 @@ English | [日本語](README_JP.md)
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NeviumX/ComfyUI-instance-on-colab/blob/main/ComfyUI_instance_on_Colab_EN.ipynb)
 
-A notebook that runs ComfyUI on a Google Colab GPU, for use from your browser or from the **Remote Connection** of Comfy Desktop.
+A notebook that runs ComfyUI on a Google Colaboratory GPU, for use from your browser or from the **Remote Connection** of Comfy Desktop.
 
 - Uses the models you put on Google Drive, and downloads models from Hugging Face and Civitai to Drive.
-- Saves the ComfyUI environment, custom nodes and settings to Drive and restores them on the next runtime.
+- Saves the ComfyUI environment, custom nodes and settings to Google Drive and restores them on the next runtime.
 - Offers three ways to connect: a private URL, a public URL with a pairing code, or a URL on your own domain.
 
 ## Requirements
