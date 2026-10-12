@@ -1831,7 +1831,8 @@ def test_access_start_says_so_when_the_tunnel_settings_cannot_be_read(tmp_path, 
     assert "トンネルの転送先の設定を読み取れませんでした" in output and "https://comfy.example.com/" in output
 
 
-def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private):
+def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private, monkeypatch):
+    monkeypatch.setattr(runtime, "REPOSITORY_URL", runtime.REPOSITORY_URL)  # Put back after the test changes it.
     from aiohttp import web, ClientSession, CookieJar
     from aiohttp.test_utils import TestServer
     import gzip
@@ -1883,6 +1884,10 @@ def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private
                         for text in ("停止", "接続を解除してランタイムを削除", "接続を解除", "キャンセル"):
                             assert json.dumps(text) in script
                         assert "__TEXTS__" not in script and "__STOP_PATH__" not in script and '"/_colab/stop"' in script
+                        # The link to the repository opens outside the page and tells that page nothing.
+                        assert f'const repository = "{runtime.REPOSITORY_URL}";' in script and "__REPOSITORY__" not in script
+                        assert runtime.REPOSITORY_URL.startswith("https://github.com/") and 'rel = "noopener noreferrer"' in script
+                        assert json.dumps("GitHubでこのノートブックを見る") in script
                 async with ClientSession() as stranger:
                     for route in (runtime.STOP_SCRIPT_PATH, runtime.STOP_PATH):
                         async with stranger.get(server.make_url(route)) as res:
@@ -1891,6 +1896,9 @@ def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private
                         assert res.status == 401
         assert not (private / "stop-request.json").exists()
         assert runtime.with_stop_button(b"no head here") == b"no head here"
+        for address in ("", "javascript:alert(1)", "http://github.com/x/y"):  # Nothing but an https address is linked.
+            runtime.REPOSITORY_URL = address
+            assert 'const repository = "";' in runtime.stop_button_script()
     asyncio.run(scenario())
 
 

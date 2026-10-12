@@ -8,7 +8,7 @@
         "",
         "**使い方:** ランタイムのタイプでGPUを選び、**1 → 2 → 3 → 6-1〜6-3 のいずれか** の順に実行します。入力欄やチェックボックスを設定してから、そのセルを実行してください。チェックボックスのある操作は、ONにして実行したときだけ行われます。",
         "",
-        "**前提:** Driveへの接続はDrive全体への許可になります。個人データを置かない専用のGoogleアカウントを使い、信頼できるカスタムノードとモデルだけを導入してください（末尾の「セキュリティについて」）。[Colabの利用条件](https://research.google.com/colaboratory/faq.html) に従い、有料プランでの利用を前提とします。"
+        "**前提:** Googleドライブへの接続はDrive全体への許可になります。個人データを置かない専用のGoogleアカウントを使い、信頼できるカスタムノードとモデルだけを導入してください（末尾の「セキュリティについて」）。[Colabの利用条件](https://research.google.com/colaboratory/faq.html) に従い、有料プランでの利用を前提とします。"
       ],
       "EN": [
         "# ComfyUI instance on Colab",
@@ -52,8 +52,8 @@
         "EN": "1. Settings"
       },
       "drive_folder": {
-        "JP": "Driveの保存先フォルダー（マイドライブからの相対パス）。同じフォルダーを複数のランタイムで同時に使わないでください。",
-        "EN": "Folder on Drive (relative to My Drive). Do not use the same folder from several runtimes at once."
+        "JP": "Googleドライブの保存先フォルダー（マイドライブからの相対パス）。同じフォルダーを複数のランタイムで同時に使わないでください。",
+        "EN": "Folder on Google Drive (relative to My Drive). Do not use the same folder from several runtimes at once."
       },
       "comfy_ref": {
         "JP": "ComfyUIのバージョン（リリースタグ）。新しい環境を作るときと、11で更新するときに使われます。",
@@ -64,8 +64,8 @@
         "EN": "Interval between automatic saves of the environment (seconds, 60 or more)."
       },
       "restore": {
-        "JP": "Driveに保存した環境（カスタムノード・設定）を復元する。OFFにすると新しい環境で始めます。",
-        "EN": "Restore the environment saved on Drive (custom nodes and settings). Turn off to start with a fresh one."
+        "JP": "Googleドライブに保存した環境（カスタムノード・設定）を復元する。OFFにすると新しい環境で始めます。",
+        "EN": "Restore the environment saved on Google Drive (custom nodes and settings). Turn off to start with a fresh one."
       },
       "apt_packages": {
         "JP": "追加で必要なOSパッケージ（空白区切り、任意）。",
@@ -84,12 +84,12 @@
     },
     "setup": {
       "title": {
-        "JP": "3. Driveを接続してセットアップ / 環境を復元",
-        "EN": "3. Connect Drive and set up / restore the environment"
+        "JP": "3. Googleドライブを接続してセットアップ / 環境を復元",
+        "EN": "3. Connect Google Drive and set up / restore the environment"
       },
       "note": {
-        "JP": "表示されるGoogleの画面でDriveへの接続を許可します。完了まで数分かかります。",
-        "EN": "Allow access to Drive in the Google dialog that appears. This takes a few minutes."
+        "JP": "表示されるGoogleの画面でGoogleドライブへの接続を許可します。完了まで数分かかります。",
+        "EN": "Allow access to Google Drive in the Google dialog that appears. This takes a few minutes."
       },
       "models_location": {
         "JP": "モデルの置き場所: マイドライブ/",
@@ -100,18 +100,18 @@
       "JP": [
         "## モデル",
         "",
-        "Driveの `ComfyUI-Colab/models/` に、種類別のフォルダー（`checkpoints`・`diffusion_models`・`text_encoders`・`vae`・`loras`・`controlnet` など）があります。",
+        "Googleドライブの `ComfyUI-Colab/models/` に、種類別のフォルダー（`checkpoints`・`diffusion_models`・`text_encoders`・`vae`・`loras`・`controlnet` など）があります。",
         "",
-        "- **手動で置く:** Driveの該当フォルダーへアップロードし、5を実行します。",
-        "- **URLから取得する:** 4にURLを貼り付けて実行します。Driveへ保存し、そのままColabにも反映します。"
+        "- **手動で置く:** Googleドライブの該当フォルダーへアップロードし、5を実行します。",
+        "- **URLから取得する:** 4にURLを貼り付けて実行します。Googleドライブへ保存し、そのままColabにも反映します。"
       ],
       "EN": [
         "## Models",
         "",
-        "`ComfyUI-Colab/models/` on Drive has a folder for each type (`checkpoints`, `diffusion_models`, `text_encoders`, `vae`, `loras`, `controlnet` and so on).",
+        "`ComfyUI-Colab/models/` on Google Drive has a folder for each type (`checkpoints`, `diffusion_models`, `text_encoders`, `vae`, `loras`, `controlnet` and so on).",
         "",
-        "- **Upload by hand:** upload into the matching folder on Drive, then run cell 5.",
-        "- **Download from a URL:** paste the URL into cell 4 and run it. The model is saved to Drive and made available to Colab right away."
+        "- **Upload by hand:** upload into the matching folder on Google Drive, then run cell 5.",
+        "- **Download from a URL:** paste the URL into cell 4 and run it. The model is saved to Google Drive and made available to Colab right away."
       ]
     },
     "download": {
@@ -146,16 +146,16 @@
     },
     "refresh": {
       "title": {
-        "JP": "5. Driveへ手動で置いたモデルを反映",
-        "EN": "5. Load models you uploaded to Drive"
+        "JP": "5. Googleドライブへ手動で置いたモデルを反映",
+        "EN": "5. Load models you uploaded to Google Drive"
       },
       "done": {
         "JP": "接続中の場合はComfyUIの画面を再読み込みしてください。同名のモデルを置き換えた場合は、10で停止（FLUSH_AND_UNMOUNTはOFF）してから6-1〜6-3のいずれかを実行します。",
         "EN": "If you are connected, reload the ComfyUI page. If you replaced a model that has the same name, stop with cell 10 (FLUSH_AND_UNMOUNT off) and run one of cells 6-1 to 6-3 again."
       },
       "skipped": {
-        "JP": "Driveへ手動でモデルを追加したときに、REFRESH_MODELSをONにして実行してください。",
-        "EN": "After adding models to Drive by hand, check REFRESH_MODELS and run the cell."
+        "JP": "Googleドライブへ手動でモデルを追加したときに、REFRESH_MODELSをONにして実行してください。",
+        "EN": "After adding models to Google Drive by hand, check REFRESH_MODELS and run the cell."
       }
     },
     "connecting": {
@@ -236,26 +236,26 @@
       "JP": [
         "## 保存と終了",
         "",
-        "環境（ComfyUI本体・カスタムノード・設定・依存関係の一覧）は自動でDriveへ保存され、次回の3で復元されます。直前の変更を確実に残したいときは8を使います。生成物はDriveへ保存されません。",
+        "環境（ComfyUI本体・カスタムノード・設定・依存関係の一覧）は自動でGoogleドライブへ保存され、次回の3で復元されます。直前の変更を確実に残したいときは8を使います。生成物はGoogleドライブへ保存されません。",
         "",
         "終了するときは、PCへの出力の取得を確認してから10を実行し、完了の表示を確認してからランタイムを削除してください。"
       ],
       "EN": [
         "## Saving and finishing",
         "",
-        "The environment (ComfyUI itself, custom nodes, settings and the list of dependencies) is saved to Drive automatically and restored by cell 3 next time. Use cell 8 when you want to be sure the latest changes are saved. Generated files are not saved to Drive.",
+        "The environment (ComfyUI itself, custom nodes, settings and the list of dependencies) is saved to Google Drive automatically and restored by cell 3 next time. Use cell 8 when you want to be sure the latest changes are saved. Generated files are not saved to Google Drive.",
         "",
         "When you finish, make sure your outputs are on your PC, run cell 10, and wait for its completion message before you delete the runtime."
       ]
     },
     "save": {
       "title": {
-        "JP": "8. 環境を今すぐDriveへ保存",
-        "EN": "8. Save the environment to Drive now"
+        "JP": "8. 環境を今すぐGoogleドライブへ保存",
+        "EN": "8. Save the environment to Google Drive now"
       },
       "done": {
-        "JP": "環境と新しいモデルをDriveへ保存しました。",
-        "EN": "Saved the environment and new models to Drive."
+        "JP": "環境と新しいモデルをGoogleドライブへ保存しました。",
+        "EN": "Saved the environment and new models to Google Drive."
       },
       "skipped": {
         "JP": "保存する場合は、SAVE_NOWをONにして実行してください。",
@@ -278,16 +278,16 @@
         "EN": "10. Save and stop"
       },
       "unmount": {
-        "JP": "Driveへの書き込みを完了して接続を解除する（ランタイムを削除する前はON。同じランタイムで6-1〜6-3のいずれかから再開するならOFF）。",
-        "EN": "Finish writing to Drive and disconnect it (on before deleting the runtime; off if you will start again from one of cells 6-1 to 6-3 on the same runtime)."
+        "JP": "Googleドライブへの書き込みを完了して接続を解除する（ランタイムを削除する前はON。同じランタイムで6-1〜6-3のいずれかから再開するならOFF）。",
+        "EN": "Finish writing to Google Drive and disconnect it (on before deleting the runtime; off if you will start again from one of cells 6-1 to 6-3 on the same runtime)."
       },
       "unmounted": {
-        "JP": "Driveへの書き込みが完了しました。ランタイムを削除できます。",
-        "EN": "Finished writing to Drive. You can delete the runtime."
+        "JP": "Googleドライブへの書き込みが完了しました。ランタイムを削除できます。",
+        "EN": "Finished writing to Google Drive. You can delete the runtime."
       },
       "still_mounted": {
-        "JP": "Driveは接続したままです。ランタイムを削除する前に、FLUSH_AND_UNMOUNTをONにして実行してください。",
-        "EN": "Drive is still connected. Before deleting the runtime, run this cell with FLUSH_AND_UNMOUNT checked."
+        "JP": "Googleドライブは接続したままです。ランタイムを削除する前に、FLUSH_AND_UNMOUNTをONにして実行してください。",
+        "EN": "Google Drive is still connected. Before deleting the runtime, run this cell with FLUSH_AND_UNMOUNT checked."
       },
       "skipped": {
         "JP": "終了する場合は、STOP_NOWをONにして実行してください。",
@@ -301,8 +301,8 @@
         "保存した環境を復元すると、ComfyUIは保存したときのバージョンのままです。カスタムノード・設定・ワークフローを残したままComfyUI本体を更新するには11を実行します。",
         "",
         "- **手順:** 0をONにして実行（または1の `COMFY_REF` に更新先のバージョンを入力）→ 1 → 2 → 3 → 11 → 6-1〜6-3 のいずれか。起動中の場合は、10で停止（`FLUSH_AND_UNMOUNT` はOFF）してから 0 → 1 → 11 → 6-1〜6-3 のいずれか を実行します。",
-        "- 更新後の環境はDriveへ保存され、次回からは新しいバージョンで復元されます。",
-        "- 更新に失敗した場合（新しいバージョンとカスタムノードの依存関係が合わない場合など）は元のバージョンへ戻し、Driveの保存内容は変えません。"
+        "- 更新後の環境はGoogleドライブへ保存され、次回からは新しいバージョンで復元されます。",
+        "- 更新に失敗した場合（新しいバージョンとカスタムノードの依存関係が合わない場合など）は元のバージョンへ戻し、Googleドライブの保存内容は変えません。"
       ],
       "EN": [
         "## Updating ComfyUI",
@@ -310,8 +310,8 @@
         "A restored environment keeps the ComfyUI version it was saved with. Use cell 11 to update ComfyUI itself while keeping your custom nodes, settings and workflows.",
         "",
         "- **Steps:** run cell 0 with its box checked (or enter the version to update to as `COMFY_REF` in cell 1) → 1 → 2 → 3 → 11 → one of 6-1 to 6-3. If ComfyUI is running, stop it with cell 10 (`FLUSH_AND_UNMOUNT` off), then run 0 → 1 → 11 → one of 6-1 to 6-3.",
-        "- The updated environment is saved to Drive and is the one restored from then on.",
-        "- If the update fails (for example when the dependencies of a custom node do not fit the new version), ComfyUI is put back to its previous version and nothing on Drive changes."
+        "- The updated environment is saved to Google Drive and is the one restored from then on.",
+        "- If the update fails (for example when the dependencies of a custom node do not fit the new version), ComfyUI is put back to its previous version and nothing on Google Drive changes."
       ]
     },
     "update": {
@@ -333,9 +333,9 @@
         "## セキュリティについて",
         "",
         "- 6-1は外部に公開しません。6-2と6-3で公開されるのは認証付きの入口だけです。6-2ではペアリングコードを入力していない端末、6-3ではCloudflare Accessの署名がない要求を拒否し、ComfyUI本体は外部から直接は見えません。トンネルには [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/) を使います（6-2は [Quick Tunnel](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)）。",
-        "- ComfyUIとカスタムノードは権限を下げた専用ユーザーで動き、Driveのマウント先と接続用の秘密情報には届きません。ただしコンテナーによる隔離ではありません。Colab自身の管理用サービスへはこのユーザーからも接続できるため、Colabを狙った悪意あるノードまでは防げません。",
+        "- ComfyUIとカスタムノードは権限を下げた専用ユーザーで動き、Googleドライブのマウント先と接続用の秘密情報には届きません。ただしコンテナーによる隔離ではありません。Colab自身の管理用サービスへはこのユーザーからも接続できるため、Colabを狙った悪意あるノードまでは防げません。",
         "- 接続できた利用者はカスタムノードを導入でき、保存した環境に含まれるノードは次回も実行されます。不審なノードを入れてしまった場合は、1の `RESTORE_SAVED_ENVIRONMENT` をOFFにして新しい環境で始めてください。",
-        "- Colabの「Driveをマウント」ボタンは使わず、このノートブックのセットアップだけでDriveへ接続してください。"
+        "- Colabの「ドライブをマウント」ボタンは使わず、このノートブックのセットアップだけでGoogleドライブへ接続してください。"
       ],
       "EN": [
         "## Security",
@@ -458,8 +458,8 @@
     },
     "drive": {
       "needs_root": {
-        "JP": "Driveの保護にはColabのroot権限を持つLinuxランタイムが必要です。",
-        "EN": "Protecting Drive requires a Colab Linux runtime with root privileges."
+        "JP": "Googleドライブの保護にはColabのroot権限を持つLinuxランタイムが必要です。",
+        "EN": "Protecting Google Drive requires a Colab Linux runtime with root privileges."
       },
       "private_symlink": {
         "JP": "保護ディレクトリにシンボリックリンクがあります。",
@@ -470,22 +470,22 @@
         "EN": "The protected directory is not owned by root."
       },
       "mounted_elsewhere": {
-        "JP": "別の場所にDriveがマウントされています。ランタイムを削除し、このノートブックだけでマウントしてください。",
-        "EN": "Drive is already mounted somewhere else. Delete the runtime and mount it only from this notebook."
+        "JP": "別の場所にGoogleドライブがマウントされています。ランタイムを削除し、このノートブックだけでマウントしてください。",
+        "EN": "Google Drive is already mounted somewhere else. Delete the runtime and mount it only from this notebook."
       },
       "no_mydrive": {
-        "JP": "Google DriveのMyDriveを確認できません。",
+        "JP": "GoogleドライブのMyDriveを確認できません。",
         "EN": "Could not find MyDrive in Google Drive."
       },
       "not_mounted": {
-        "JP": "Driveがマウントされていません。セットアップから実行してください。",
-        "EN": "Drive is not mounted. Run the notebook from setup."
+        "JP": "Googleドライブがマウントされていません。セットアップから実行してください。",
+        "EN": "Google Drive is not mounted. Run the notebook from setup."
       }
     },
     "models": {
       "synced": {
-        "JP": "Driveからモデルを反映しました: {copied}ファイル",
-        "EN": "Models copied from Drive: {copied} file(s)"
+        "JP": "Googleドライブからモデルを反映しました: {copied}ファイル",
+        "EN": "Models copied from Google Drive: {copied} file(s)"
       }
     },
     "environment": {
@@ -542,8 +542,8 @@
         "EN": "Select a GPU in the Colab runtime settings."
       },
       "fresh_environment": {
-        "JP": "保存済みの環境を復元せず、新しい環境を作成します。Drive上の保存は次回の保存から新しい世代に置き換わります。",
-        "EN": "Not restoring the saved environment; creating a new one. The next save starts a new generation on Drive."
+        "JP": "保存済みの環境を復元せず、新しい環境を作成します。Googleドライブ上の保存は次回の保存から新しい世代に置き換わります。",
+        "EN": "Not restoring the saved environment; creating a new one. The next save starts a new generation on Google Drive."
       },
       "invalid_archive_name": {
         "JP": "保存情報のアーカイブ名が不正です。",
@@ -590,8 +590,8 @@
         "EN": "Copying models from Drive to Colab (needs local free space for all models)."
       },
       "done": {
-        "JP": "セットアップ完了。Driveの保存先: MyDrive/",
-        "EN": "Setup complete. Models folder on Drive: MyDrive/"
+        "JP": "セットアップ完了。Googleドライブの保存先: MyDrive/",
+        "EN": "Setup complete. Models folder on Google Drive: MyDrive/"
       }
     },
     "download": {
@@ -676,8 +676,8 @@
         "EN": "SHA256 must be 64 hexadecimal digits."
       },
       "exists": {
-        "JP": "Driveに同名モデルが存在します。別の保存名を指定してください。",
-        "EN": "A model with the same name already exists on Drive. Choose a different file name."
+        "JP": "Googleドライブに同名モデルが存在します。別の保存名を指定してください。",
+        "EN": "A model with the same name already exists on Google Drive. Choose a different file name."
       },
       "sha256_mismatch": {
         "JP": "モデルのSHA256が一致しません。確定ファイルとして保存しません。",
@@ -688,12 +688,12 @@
         "EN": "The site did not provide a file name. Specify one."
       },
       "exists_not_overwritten": {
-        "JP": "Driveに同名モデルが存在します。上書きしません。別の保存名を指定してください。",
-        "EN": "A model with the same name already exists on Drive. It is not overwritten. Choose a different file name."
+        "JP": "Googleドライブに同名モデルが存在します。上書きしません。別の保存名を指定してください。",
+        "EN": "A model with the same name already exists on Google Drive. It is not overwritten. Choose a different file name."
       },
       "saved": {
-        "JP": "Driveへ保存し、Colabへ反映しました:",
-        "EN": "Saved to Drive and copied to Colab:"
+        "JP": "Googleドライブへ保存し、Colabへ反映しました:",
+        "EN": "Saved to Google Drive and copied to Colab:"
       },
       "connection_failed": {
         "JP": "モデルのダウンロード通信に失敗しました。接続・アクセス権を確認してください。",
@@ -878,7 +878,7 @@
         "EN": "Opening the URL asks for the code. To add another device, run cell 6-2 with NEW_PAIRING_CODE checked. Stopping ends the URL and every connected device."
       },
       "colab_heading": {
-        "JP": "このブラウザーで開くURL（このノートブックを実行しているGoogleアカウントでだけ開けます）:",
+        "JP": "このブラウザーで開くURL（このノートブックを実行しているGoogleアカウントでのみ開けます）:",
         "EN": "URL to open in this browser (only the Google account that runs this notebook can open it):"
       },
       "colab_note": {
@@ -892,8 +892,8 @@
     },
     "stop": {
       "saved": {
-        "JP": "Driveへの環境保存が完了しました。",
-        "EN": "The environment has been saved to Drive."
+        "JP": "Googleドライブへの環境保存が完了しました。",
+        "EN": "The environment has been saved to Google Drive."
       },
       "done": {
         "JP": "停止しました。生成ファイルはランタイム削除前にPCで確認してください。",
@@ -918,23 +918,23 @@
         "EN": "Updating ComfyUI from {previous} to {ref}."
       },
       "undone": {
-        "JP": "更新に失敗したため、元のバージョン（{version}）へ戻しました。Driveの保存内容は変わっていません。",
-        "EN": "The update failed, so ComfyUI was put back to {version}. Nothing on Drive has changed."
+        "JP": "更新に失敗したため、元のバージョン（{version}）へ戻しました。Googleドライブの保存内容は変わっていません。",
+        "EN": "The update failed, so ComfyUI was put back to {version}. Nothing on Google Drive has changed."
       },
       "undo_failed": {
         "JP": "更新に失敗し、元のバージョンへも戻せませんでした。11をもう一度実行してください。",
         "EN": "The update failed and ComfyUI could not be put back. Run cell 11 again."
       },
       "incomplete": {
-        "JP": "ComfyUIの更新が途中で止まっています。11をもう一度実行するか、ランタイムを削除してください（Driveには更新前の環境が残っています）。",
-        "EN": "An update of ComfyUI was left unfinished. Run cell 11 again, or delete the runtime (Drive still holds the environment from before the update)."
+        "JP": "ComfyUIの更新が途中で止まっています。11をもう一度実行するか、ランタイムを削除してください（Googleドライブには更新前の環境が残っています）。",
+        "EN": "An update of ComfyUI was left unfinished. Run cell 11 again, or delete the runtime (Google Drive still holds the environment from before the update)."
       },
       "resuming": {
         "JP": "途中で止まった更新を元に戻します。",
         "EN": "Undoing the update that was left unfinished."
       },
       "done": {
-        "JP": "ComfyUIを {previous} から {version} へ更新し、Driveへ保存しました。6-1〜6-3のいずれかを実行して起動してください。",
+        "JP": "ComfyUIを {previous} から {version} へ更新し、Goolgeドライブへ保存しました。6-1〜6-3のいずれかを実行して起動してください。",
         "EN": "Updated ComfyUI from {previous} to {version} and saved it to Drive. Run one of cells 6-1 to 6-3 to start it."
       }
     },
@@ -1016,8 +1016,8 @@
         "EN": "Stop ComfyUI"
       },
       "explain": {
-        "JP": "環境をDriveへ保存してから接続を解除します。生成物はDriveへ保存されません。ランタイムを削除すると、PCへ取得していない出力は失われます。",
-        "EN": "The environment is saved to Drive, then the connection is closed. Generated files are not saved to Drive: deleting the runtime loses any output you have not downloaded to your PC."
+        "JP": "環境をGoogleドライブへ保存してから接続を解除します。生成物はGoogleドライブへ保存されません。ランタイムを削除するとPCへ取得していない出力は失われます。",
+        "EN": "The environment is saved to Google Drive, then the connection is closed. Generated files are not saved to Google Drive: deleting the runtime loses any output you have not downloaded to your PC."
       },
       "delete": {
         "JP": "接続を解除してランタイムを削除",
@@ -1036,7 +1036,7 @@
         "EN": "Saving and stopping. This page is disconnected when it is done."
       },
       "stopped": {
-        "JP": "接続を解除しました。再開するときは、ノートブックの6-1〜6-3のいずれかを実行してください。",
+        "JP": "接続を解除しました。再開するときはノートブックの6-1〜6-3のいずれかを実行してください。",
         "EN": "Disconnected. To start again, run one of cells 6-1 to 6-3 in the notebook."
       },
       "deleted": {
@@ -1050,6 +1050,10 @@
       "slow": {
         "JP": "時間がかかっています。進まない場合は、ノートブックの10で停止するかColabの画面からランタイムを削除してください。",
         "EN": "This is taking a while. If nothing happens, stop with cell 10 of the notebook or delete the runtime in Colab."
+      },
+      "repository": {
+        "JP": "GitHubレポジトリを開く",
+        "EN": "Open GitHub Repository"
       }
     }
   }
