@@ -399,8 +399,10 @@ def test_proxy_compresses_text_caches_hashed_files_and_rejects_odd_credentials()
         image = bytes(range(256)) * 64
 
         async def backend(request):
-            if request.path.endswith(".png"):
-                return web.Response(body=image, content_type="image/png")
+            if request.path.endswith((".png", ".webp")) or request.path == "/view":
+                # ComfyUI's own rule: a picture served as a file is good for a day.
+                cache = {"Cache-Control": "public, max-age=86400"} if not request.path == "/view" else {}
+                return web.Response(body=image, content_type="image/png", headers=cache)
             if request.path.startswith("/api/"):
                 return web.json_response({"nodes": ["KSampler"] * 2000})
             return web.Response(body=script, content_type="application/javascript", charset="utf-8",
@@ -433,6 +435,13 @@ def test_proxy_compresses_text_caches_hashed_files_and_rejects_odd_credentials()
                     async with client.get(server.make_url("/api/view/image-AbCdEf12.png"), headers=gzip_ok) as res:
                         assert "Content-Encoding" not in res.headers and await res.read() == image
                         assert res.headers["Cache-Control"] == "no-store"
+                    # A template thumbnail is kept by the browser as long as ComfyUI says, and by nothing in between.
+                    async with client.get(server.make_url("/templates/default-1.webp"), headers=gzip_ok) as res:
+                        assert res.headers["Cache-Control"] == "private, max-age=86400" and await res.read() == image
+                    # What is generated is not kept, whatever its address looks like.
+                    for route in ("/view?filename=ComfyUI_00001_.png&type=output", "/api/view?filename=x.png", "/api/files/x.png"):
+                        async with client.get(server.make_url(route), headers=gzip_ok) as res:
+                            assert res.headers["Cache-Control"] == "no-store", route
                     async with client.get(server.make_url("/assets/index-CrctFnrp.js"), headers={"Accept-Encoding": "identity"}) as res:
                         assert "Content-Encoding" not in res.headers and await res.read() == script
                     async with client.head(server.make_url("/assets/index-CrctFnrp.js"), headers=gzip_ok) as res:
@@ -1456,6 +1465,8 @@ def test_tunnel_start_shows_a_pairing_code_instead_of_a_key_and_stop_revokes_eve
     assert [args[-1] for args in started.spawned[:-1]] == ["proxy", "supervise"]
     # The tunnel never points at ComfyUI itself, only at the authenticating proxy.
     assert started.spawned[-1][started.spawned[-1].index("--url") + 1] == "http://127.0.0.1:8189"
+    # Over TCP: QUIC cannot get the UDP buffers it wants on Colab.
+    assert started.spawned[-1][started.spawned[-1].index("--protocol") + 1] == "http2"
     assert set(json.loads((tmp_path / "processes.json").read_text())) == {"supervisor", "proxy", "tunnel"}
     with pytest.raises(RuntimeError, match="既に起動済みです"):
         runtime.start(config, "colab")  # One way at a time.
@@ -1692,6 +1703,7 @@ def test_access_start_runs_the_named_tunnel_without_exposing_its_token(tmp_path,
     saved = (tmp_path / "session.json").read_text()
     assert json.loads(saved) == {"drive_folder": "ComfyUI-Colab", "mode": "access", "access": ACCESS}
     assert [args[-1] for args in started.spawned] == ["proxy", "supervise", "run"]
+    assert started.spawned[-1][started.spawned[-1].index("--protocol") + 1] == "http2"
     # Only cloudflared holds the token, in its environment: not its command line, a file or the output.
     assert started.environments[-1]["TUNNEL_TOKEN"] == token and started.environments[:-1] == [None, None]
     assert all(token not in " ".join(map(str, args)) for args in started.spawned)

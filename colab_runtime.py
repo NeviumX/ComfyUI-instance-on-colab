@@ -43,6 +43,9 @@ ARCHIVE_LIMIT = 4 * 1024 ** 3
 MODEL_FOLDERS = ("checkpoints", "diffusion_models", "unet", "text_encoders", "clip", "clip_vision", "vae",
                  "loras", "controlnet", "upscale_models", "embeddings", "audio_encoders", "model_patches")
 CLOUDFLARED_VERSION = "2026.10.0"
+# cloudflared's link to Cloudflare. Its default, QUIC, cannot get the UDP buffers it wants in a
+# Colab container ("failed to sufficiently increase receive buffer size"); HTTP/2 runs over TCP.
+TUNNEL_PROTOCOL = "http2"
 CLOUDFLARED_SHA256 = "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db"
 MESSAGES = None  # build_notebook.py puts the messages of the notebook's language on this line.
 if MESSAGES is None:
@@ -1728,8 +1731,16 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
                     response = web.StreamResponse(status=res.status, headers=passed_on(res, True))
                 response.headers["Referrer-Policy"] = "no-referrer"
                 complete = request.method == "GET" and res.status == 200
-                response.headers["Cache-Control"] = ("private, max-age=31536000, immutable"
-                    if complete and hashed_asset.fullmatch(request.path) else "no-store")
+                # ComfyUI marks the pictures it ships (template thumbnails, icons) as good for a day.
+                # The browser may keep those, so they are not fetched again on every look; nothing in
+                # between may. Generated files come from /api and /view addresses and are never kept.
+                kept = re.search(r"max-age=\d+", res.headers.get("Cache-Control", ""))
+                if complete and hashed_asset.fullmatch(request.path):
+                    response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+                elif complete and kept and "." in request.path.rsplit("/", 1)[-1] and not request.path.startswith("/api/"):
+                    response.headers["Cache-Control"] = "private, " + kept.group(0)
+                else:
+                    response.headers["Cache-Control"] = "no-store"
                 # ComfyUI sends its 26 MB frontend uncompressed and the tunnel is the slow hop.
                 if (complete and "Content-Encoding" not in res.headers
                         and res.headers.get("Content-Type", "").lower().startswith(compressible)
@@ -2160,12 +2171,14 @@ def start(config, mode, access=None, tunnel_token=""):
         with logfile.open("a") as log:
             if mode == "access":
                 # The token goes in the environment: a command line can be read by every user here.
-                tunnel = subprocess.Popen([str(PRIVATE / "cloudflared"), "tunnel", "--no-autoupdate", "run"],
+                tunnel = subprocess.Popen([str(PRIVATE / "cloudflared"), "tunnel", "--no-autoupdate",
+                                           "--protocol", TUNNEL_PROTOCOL, "run"],
                                           env={**os.environ, "TUNNEL_TOKEN": tunnel_token},
                                           stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             else:
                 tunnel = subprocess.Popen([str(PRIVATE / "cloudflared"), "tunnel", "--no-autoupdate",
-                        "--url", "http://127.0.0.1:8189"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                        "--protocol", TUNNEL_PROTOCOL, "--url", "http://127.0.0.1:8189"],
+                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         processes["tunnel"] = tunnel.pid
         private_write(PRIVATE / "processes.json", json.dumps(processes))
         if mode == "access":
