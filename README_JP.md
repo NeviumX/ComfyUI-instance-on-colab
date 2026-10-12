@@ -33,6 +33,7 @@ Google ColabのGPUでComfyUIを実行し、ブラウザーやComfy Desktopの **
 - 別の方法へ切り替えるときは、先に10で停止します（`FLUSH_AND_UNMOUNT` はOFF）。
 - **6-2:** ペアリングコードは10分間・1回だけ有効です。端末を追加するときは、`NEW_PAIRING_CODE` をONにして6-2を実行します。停止すると、URLと接続済みの端末はすべて無効になります。
 - **Comfy Desktop:** URLをRemote Connectionに入力し、**Auto-download outputs** をONにすると生成物がPCへ保存されます。
+- **停止ボタン:** ComfyUIの画面上部の **停止** から、環境を保存して接続を解除できます。そのままランタイムを削除することも選べます。削除すると、PCへ取得していない出力は失われます。
 
 ### 独自ドメインURL（6-3）の準備
 

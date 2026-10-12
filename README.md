@@ -33,6 +33,7 @@ A notebook that runs ComfyUI on a Google Colab GPU, for use from your browser or
 - To switch to another way, stop with cell 10 first (`FLUSH_AND_UNMOUNT` off).
 - **6-2:** a pairing code works once, for 10 minutes. To add another device, run 6-2 with `NEW_PAIRING_CODE` checked. Stopping ends the URL and every connected device.
 - **Comfy Desktop:** enter the URL in Remote Connection, and turn on **Auto-download outputs** to save generated files to your PC.
+- **Stop button:** **Stop** at the top of the ComfyUI page saves the environment and disconnects. You can choose to delete the runtime as well; that loses any output you have not downloaded to your PC.
 
 ### Setting up the custom domain URL (6-3)
 

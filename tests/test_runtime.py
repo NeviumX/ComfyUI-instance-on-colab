@@ -1429,6 +1429,9 @@ class StartedProcesses:
         monkeypatch.setattr(runtime, "PRIVATE", tmp_path)
         monkeypatch.setattr(runtime, "CONFIG", tmp_path / "session.json")
         monkeypatch.setattr(runtime.subprocess, "Popen", Process)
+        # The watch for the stop button is a thread of the notebook; here it is only noted.
+        self.followed = []
+        monkeypatch.setattr(runtime, "follow_stop_requests", self.followed.append)
         monkeypatch.setattr(runtime.os, "killpg", lambda pid, sig: None, raising=False)
         monkeypatch.setitem(sys.modules, "requests", SimpleNamespace(get=get, RequestException=OSError))
 
@@ -1826,3 +1829,169 @@ def test_access_start_says_so_when_the_tunnel_settings_cannot_be_read(tmp_path, 
     runtime.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
     output = capsys.readouterr().out
     assert "トンネルの転送先の設定を読み取れませんでした" in output and "https://comfy.example.com/" in output
+
+
+def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private):
+    from aiohttp import web, ClientSession, CookieJar
+    from aiohttp.test_utils import TestServer
+    import gzip
+
+    async def scenario():
+        page = b"<!doctype html><html><HEAD><title>ComfyUI</title></HEAD><body><div id='vue-app'></div></body></html>"
+        asked = []
+
+        async def backend(request):
+            asked.append((request.path, request.headers.get("Accept-Encoding")))
+            if request.path == "/packed":
+                return web.Response(body=gzip.compress(page), content_type="text/html", headers={"Content-Encoding": "gzip"})
+            if request.path.startswith("/api/"):
+                return web.json_response({"html": "</head>"})
+            return web.Response(body=page, content_type="text/html", headers={"ETag": '"abc"'})
+
+        app = web.Application()
+        app.router.add_route("*", "/{path:.*}", backend)
+        tag = b'<script defer src="/_colab/stop.js"></script></HEAD>'
+        async with TestServer(app) as upstream:
+            config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
+            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            async with TestServer(proxy) as server:
+                async with ClientSession(cookie_jar=CookieJar(unsafe=True), auto_decompress=False) as client:
+                    signed_in(client, server)
+                    for route in ("/", "/index.html"):
+                        async with client.get(server.make_url(route), headers={"Accept-Encoding": "identity"}) as res:
+                            body = await res.read()
+                            # (A local filtering proxy may add a script of its own to HTML, so no exact comparison.)
+                            assert res.status == 200 and body.count(tag) == 1 and body.endswith(tag + page.split(b"</HEAD>")[1])
+                            assert body.startswith(page.split(b"</HEAD>")[0]) and res.headers["Cache-Control"] == "no-store"
+                    # The page still travels compressed, and ComfyUI is asked for it plain so it can be changed.
+                    async with client.get(server.make_url("/"), headers={"Accept-Encoding": "gzip, br"}) as res:
+                        packed = await res.read()
+                        assert (gzip.decompress(packed) if res.headers.get("Content-Encoding") == "gzip" else packed).count(tag) == 1
+                    assert [encoding for path, encoding in asked if path in ("/", "/index.html")] == ["identity"] * 3
+                    # Only that page: not other HTML, not data that mentions a head, not a page that arrives packed.
+                    for route in ("/docs/page.html", "/packed"):
+                        async with client.get(server.make_url(route), headers={"Accept-Encoding": "identity"}) as res:
+                            assert b"/_colab/stop.js" not in await res.read()
+                    async with client.get(server.make_url("/api/x"), headers={"Accept-Encoding": "identity"}) as res:
+                        assert await res.json() == {"html": "</head>"}
+                    async with client.post(server.make_url("/"), data=b"x") as res:
+                        assert b"/_colab/stop.js" not in await res.read()
+                    # The script: the button's texts in this language, and only for a browser that is let in.
+                    async with client.get(server.make_url(runtime.STOP_SCRIPT_PATH), headers={"Accept-Encoding": "identity"}) as res:
+                        script = await res.text()
+                        assert res.status == 200 and res.content_type == "application/javascript"
+                        for text in ("停止", "接続を解除してランタイムを削除", "接続を解除", "キャンセル"):
+                            assert json.dumps(text) in script
+                        assert "__TEXTS__" not in script and "__STOP_PATH__" not in script and '"/_colab/stop"' in script
+                async with ClientSession() as stranger:
+                    for route in (runtime.STOP_SCRIPT_PATH, runtime.STOP_PATH):
+                        async with stranger.get(server.make_url(route)) as res:
+                            assert res.status == 401
+                    async with stranger.post(server.make_url(runtime.STOP_PATH), json={"delete_runtime": True}) as res:
+                        assert res.status == 401
+        assert not (private / "stop-request.json").exists()
+        assert runtime.with_stop_button(b"no head here") == b"no head here"
+    asyncio.run(scenario())
+
+
+def test_stop_button_leaves_a_request_only_for_a_signed_in_browser_of_this_site(private):
+    from aiohttp import web, ClientSession, CookieJar
+    from aiohttp.test_utils import TestServer
+
+    async def scenario():
+        reached = []
+
+        async def backend(request):
+            reached.append(request.path)
+            return web.Response(text="ComfyUI")
+
+        app = web.Application()
+        app.router.add_route("*", "/{path:.*}", backend)
+        request_file = private / "stop-request.json"
+        async with TestServer(app) as upstream:
+            config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
+            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            async with TestServer(proxy) as server:
+                async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
+                    signed_in(client, server)
+                    stop = server.make_url(runtime.STOP_PATH)
+                    async with client.get(stop) as res:
+                        assert res.status == 200 and await res.json() == {"state": "idle"}
+                    # Another site open in the same browser cannot stop anything, or delete the runtime.
+                    async with client.post(stop, json={"delete_runtime": True}, headers={"Origin": "https://evil.example"}) as res:
+                        assert res.status == 403
+                    for body in (b"", b"not json", b"[]", b'{"delete_runtime": "yes"}', b'{"delete_runtime": true}' + b" " * 300):
+                        async with client.post(stop, data=body) as res:
+                            assert res.status == 400, body
+                    assert not request_file.exists()
+                    async with client.post(stop, json={"delete_runtime": False}) as res:
+                        assert res.status == 202 and await res.json() == {"state": "pending"}
+                    assert json.loads(request_file.read_text()) == {"delete_runtime": False}
+                    async with client.post(stop, json={"delete_runtime": True}) as res:
+                        assert res.status == 202
+                    assert json.loads(request_file.read_text()) == {"delete_runtime": True}
+                    # The notebook could not save: the page is told, and may ask again.
+                    request_file.unlink()
+                    runtime.private_write(private / "stop-status.json", '{"state": "failed"}')
+                    async with client.get(stop) as res:
+                        assert await res.json() == {"state": "failed"}
+                    async with client.post(stop, json={"delete_runtime": False}) as res:
+                        assert await res.json() == {"state": "pending"}
+        assert reached == []  # None of this is ComfyUI's business.
+    asyncio.run(scenario())
+
+
+def test_stop_request_is_carried_out_by_the_notebook_and_deletes_the_runtime_only_when_asked(private, monkeypatch, capsys):
+    done = []
+    monkeypatch.setattr(runtime, "stop", lambda config, save=True: done.append(("stop", save)))
+    monkeypatch.setattr(runtime, "delete_colab_runtime", lambda: done.append("delete"))
+    config = {"drive_folder": "ComfyUI-Colab", "mode": "tunnel"}
+    assert runtime.carry_out_stop_request(config) is False and done == []  # Nothing was asked.
+    runtime.request_stop(False)
+    assert runtime.stop_request_state() == "pending"
+    assert runtime.carry_out_stop_request(config) is True and done == [("stop", True)]
+    done.clear()
+    runtime.request_stop(True)
+    assert runtime.carry_out_stop_request(config) is True and done == [("stop", True), "delete"]  # Saved first.
+
+    def failing_stop(config, save=True):
+        raise RuntimeError("Drive is full")
+    done.clear()
+    monkeypatch.setattr(runtime, "stop", failing_stop)
+    runtime.request_stop(True)
+    # The save failed: ComfyUI keeps running, the page hears about it, and the runtime is not deleted.
+    assert runtime.carry_out_stop_request(config) is False and done == []
+    assert runtime.stop_request_state() == "failed" and not (private / "stop-request.json").exists()
+    assert "停止できませんでした" in capsys.readouterr().out
+    assert runtime.carry_out_stop_request(config) is False  # Not tried again until asked again.
+    runtime.request_stop(False)
+    assert runtime.stop_request_state() == "pending"
+
+
+def test_starting_watches_for_the_stop_button_and_stopping_ends_the_watch(tmp_path, monkeypatch):
+    import threading
+    started = StartedProcesses(tmp_path, monkeypatch, proxy_answer=401)
+    runtime.private_write(tmp_path / "stop-request.json", '{"delete_runtime": true}')  # Left over from before.
+    config = {"drive_folder": "ComfyUI-Colab"}
+    runtime.start(config, "tunnel")
+    assert started.followed == [config] and not (tmp_path / "stop-request.json").exists()
+    # The watch itself: it keeps looking until the request is carried out or the notebook stops.
+    monkeypatch.undo()
+    monkeypatch.setattr(runtime, "PRIVATE", tmp_path)
+    monkeypatch.setattr(runtime, "CONFIG", tmp_path / "session.json")
+    looked = threading.Event()
+    monkeypatch.setattr(runtime, "carry_out_stop_request", lambda config: looked.set())
+    monkeypatch.setattr(runtime, "STOP_WATCH_SECONDS", 0.05)
+    before = threading.active_count()
+    runtime.follow_stop_requests(config)
+    assert looked.wait(5)
+    watch = runtime.STOP_WATCH[0]
+    monkeypatch.setattr(runtime.os, "killpg", lambda pid, sig: None, raising=False)
+    runtime.private_write(tmp_path / "stop-request.json", '{"delete_runtime": false}')
+    runtime.stop(config, save=False)
+    assert watch.is_set() and not (tmp_path / "stop-request.json").exists() and not (tmp_path / "stop-status.json").exists()
+    for _ in range(50):
+        if threading.active_count() <= before:
+            break
+        threading.Event().wait(0.1)
+    assert threading.active_count() <= before

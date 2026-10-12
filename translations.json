@@ -168,7 +168,8 @@
         "- **6-2 公開URL:** Comfy Desktopの **Remote Connection** や別の端末から使う場合。表示されたURLを開き、ノートブックに表示されたコードを入力した端末だけが接続できます。コードは10分間・1回だけ有効で、URLは10で停止すると無効になります。",
         "- **6-3 独自ドメインURL:** 自分のドメインの固定URLで、Comfy Desktopや別の端末から使う場合。Cloudflare Accessでログインした、許可済みのアカウントだけが接続できます。Cloudflareのアカウントとドメイン、事前の設定が必要です。",
         "- Desktopでは、接続の設定で **Auto-download outputs** をONにすると生成物がPCへ保存されます。ブラウザーで使った場合や取得し損ねた出力は、9でまとめて回収できます。",
-        "- 画面が表示されない場合は、7の接続診断で止まっている箇所を確認できます。"
+        "- 画面が表示されない場合は、7の接続診断で止まっている箇所を確認できます。",
+        "- ComfyUIの画面上部の **停止** ボタンからも、環境を保存して接続を解除できます。そのままランタイムを削除することも選べます。"
       ],
       "EN": [
         "## Starting and connecting",
@@ -179,7 +180,8 @@
         "- **6-2 Public URL:** for the **Remote Connection** of Comfy Desktop or another device. Open the URL that is shown; only a device where you enter the code shown in the notebook can connect. A code works once, for 10 minutes, and the URL stops working when you stop with cell 10.",
         "- **6-3 Custom domain URL:** for Comfy Desktop or another device, at a fixed URL on your domain. Only accounts you allowed, signed in through Cloudflare Access, can connect. Needs a Cloudflare account, a domain and some setup beforehand.",
         "- In Desktop, turn on **Auto-download outputs** in the connection settings to save generated files to your PC. If you used a browser, or some outputs were missed, collect them with cell 9.",
-        "- If the UI does not appear, the connection diagnosis in cell 7 shows where it stops."
+        "- If the UI does not appear, the connection diagnosis in cell 7 shows where it stops.",
+        "- The **Stop** button at the top of the ComfyUI page also saves the environment and disconnects. You can choose to delete the runtime as well."
       ]
     },
     "start_colab": {
@@ -1002,6 +1004,52 @@
       "target_unknown": {
         "JP": "注意: トンネルの転送先の設定を読み取れませんでした。Cloudflareのトンネルの設定で、公開ホスト名の転送先が http://127.0.0.1:8189 になっていることを確認してください。",
         "EN": "Note: could not read where the tunnel leads. Check in the tunnel settings in Cloudflare that the public hostname points to http://127.0.0.1:8189."
+      }
+    },
+    "menu": {
+      "stop": {
+        "JP": "停止",
+        "EN": "Stop"
+      },
+      "title": {
+        "JP": "ComfyUIを停止",
+        "EN": "Stop ComfyUI"
+      },
+      "explain": {
+        "JP": "環境をDriveへ保存してから接続を解除します。生成物はDriveへ保存されません。ランタイムを削除すると、PCへ取得していない出力は失われます。",
+        "EN": "The environment is saved to Drive, then the connection is closed. Generated files are not saved to Drive: deleting the runtime loses any output you have not downloaded to your PC."
+      },
+      "delete": {
+        "JP": "接続を解除してランタイムを削除",
+        "EN": "Disconnect and delete the runtime"
+      },
+      "disconnect": {
+        "JP": "接続を解除",
+        "EN": "Disconnect"
+      },
+      "cancel": {
+        "JP": "キャンセル",
+        "EN": "Cancel"
+      },
+      "working": {
+        "JP": "保存して停止しています。完了するとこのページは切断されます。",
+        "EN": "Saving and stopping. This page is disconnected when it is done."
+      },
+      "stopped": {
+        "JP": "接続を解除しました。再開するときは、ノートブックの6-1〜6-3のいずれかを実行してください。",
+        "EN": "Disconnected. To start again, run one of cells 6-1 to 6-3 in the notebook."
+      },
+      "deleted": {
+        "JP": "接続を解除しました。ランタイムの削除には少し時間がかかります。Colabの画面でランタイムが切断されたことを確認してください。",
+        "EN": "Disconnected. Deleting the runtime takes a little longer. Check in Colab that the runtime has been disconnected."
+      },
+      "failed": {
+        "JP": "停止できませんでした。ノートブックの10で停止してください。",
+        "EN": "Could not stop. Stop with cell 10 of the notebook."
+      },
+      "slow": {
+        "JP": "時間がかかっています。進まない場合は、ノートブックの10で停止するかColabの画面からランタイムを削除してください。",
+        "EN": "This is taking a while. If nothing happens, stop with cell 10 of the notebook or delete the runtime in Colab."
       }
     }
   }

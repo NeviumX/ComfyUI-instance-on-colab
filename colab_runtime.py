@@ -1080,6 +1080,185 @@ def download_model(config, url, relative_path, sha256="", token_secret="", name_
         partial.unlink(missing_ok=True)
 
 
+STOP_PATH = "/_colab/stop"
+STOP_SCRIPT_PATH = "/_colab/stop.js"
+# Added to the ComfyUI page by the proxy: a small button in the tab row, and the dialog it opens.
+STOP_SCRIPT = r"""(() => {
+  if (window.top !== window || document.getElementById("colab-stop-button")) return;
+  const text = __TEXTS__;
+  const style = document.createElement("style");
+  style.textContent = `
+    #colab-stop-button { position: fixed; top: 7px; right: 56px; z-index: 1000; font: 12px/1 system-ui, sans-serif;
+      padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(128, 128, 128, .5); background: rgba(30, 30, 30, .7);
+      color: #ddd; cursor: pointer; opacity: .6; }
+    #colab-stop-button:hover, #colab-stop-button:focus-visible { opacity: 1; color: #fff; border-color: #f87171; }
+    #colab-stop-dialog { font: 14px/1.6 system-ui, sans-serif; width: min(26rem, calc(100vw - 2rem)); padding: 1.25rem;
+      border: 1px solid #555; border-radius: 10px; background: #202020; color: #eee;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, .6); }
+    #colab-stop-dialog::backdrop { background: rgba(0, 0, 0, .6); }
+    #colab-stop-dialog h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+    #colab-stop-dialog p { margin: 0 0 .75rem; }
+    #colab-stop-dialog .colab-stop-status { color: #fcd34d; }
+    #colab-stop-dialog .colab-stop-status:empty { display: none; }
+    #colab-stop-dialog .colab-stop-actions { display: flex; flex-direction: column; gap: .5rem; }
+    #colab-stop-dialog button { font: inherit; padding: .55rem .75rem; border-radius: 6px; border: 1px solid #666;
+      background: #333; color: #eee; cursor: pointer; }
+    #colab-stop-dialog button:hover:enabled { background: #444; }
+    #colab-stop-dialog button:disabled { opacity: .45; cursor: default; }
+    #colab-stop-dialog button.colab-stop-danger { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+    #colab-stop-dialog button.colab-stop-danger:hover:enabled { background: #dc2626; }
+    #colab-stop-dialog button.colab-stop-quiet { background: transparent; }
+  `;
+  const add = (parent, tag, content, name) => {
+    const element = document.createElement(tag);
+    if (content) element.textContent = content;
+    if (name) element.className = name;
+    if (tag === "button") element.type = "button";
+    return parent.appendChild(element);
+  };
+  const dialog = document.createElement("dialog");
+  dialog.id = "colab-stop-dialog";
+  add(dialog, "h2", text.title);
+  add(dialog, "p", text.explain);
+  const status = add(dialog, "p", "", "colab-stop-status");
+  const actions = add(dialog, "div", "", "colab-stop-actions");
+  const remove = add(actions, "button", text.delete, "colab-stop-danger");
+  const disconnect = add(actions, "button", text.disconnect);
+  const cancel = add(actions, "button", text.cancel, "colab-stop-quiet");
+  const button = document.createElement("button");
+  button.id = "colab-stop-button";
+  button.type = "button";
+  button.textContent = text.stop;
+  button.title = text.title;
+  let busy = false;
+  const lock = (locked) => {
+    busy = locked;
+    for (const choice of [remove, disconnect, cancel]) choice.disabled = locked;
+  };
+  const ask = async (deleteRuntime) => {
+    lock(true);
+    status.textContent = text.working;
+    try {
+      const answer = await fetch("__STOP_PATH__", {method: "POST", headers: {"Content-Type": "application/json"},
+                                               body: JSON.stringify({delete_runtime: deleteRuntime})});
+      if (!answer.ok) throw new Error(answer.status);
+    } catch (error) {
+      status.textContent = text.failed;
+      lock(false);
+      return;
+    }
+    const started = Date.now();
+    const timer = setInterval(async () => {
+      let state;
+      try {
+        const answer = await fetch("__STOP_PATH__", {cache: "no-store"});
+        if (!answer.ok) throw new Error(answer.status);
+        state = (await answer.json()).state;
+      } catch (error) {
+        // Nothing answers any more: the proxy and the tunnel are down.
+        clearInterval(timer);
+        status.textContent = deleteRuntime ? text.deleted : text.stopped;
+        button.remove();
+        return;
+      }
+      if (state === "failed") {
+        clearInterval(timer);
+        status.textContent = text.failed;
+        lock(false);
+      } else if (Date.now() - started > 180000) {
+        status.textContent = text.slow;
+      }
+    }, 3000);
+  };
+  remove.addEventListener("click", () => ask(true));
+  disconnect.addEventListener("click", () => ask(false));
+  cancel.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
+  // Keys pressed in the dialog are not ComfyUI shortcuts.
+  dialog.addEventListener("keydown", (event) => event.stopPropagation());
+  button.addEventListener("click", () => {
+    if (!busy) status.textContent = "";
+    dialog.showModal();
+  });
+  const mount = () => {
+    document.head.appendChild(style);
+    document.body.append(button, dialog);
+  };
+  if (document.body) mount(); else document.addEventListener("DOMContentLoaded", mount);
+})();
+"""
+
+
+def with_stop_button(page):
+    """The ComfyUI page with the script that adds the stop button (unchanged if it has no head)."""
+    position = page.lower().rfind(b"</head>")
+    tag = b'<script defer src="' + STOP_SCRIPT_PATH.encode() + b'"></script>'
+    return page if position < 0 else page[:position] + tag + page[position:]
+
+
+def stop_button_script():
+    texts = {"stop": t("menu.stop"), "title": t("menu.title"), "explain": t("menu.explain"), "delete": t("menu.delete"),
+             "disconnect": t("menu.disconnect"), "cancel": t("menu.cancel"), "working": t("menu.working"),
+             "stopped": t("menu.stopped"), "deleted": t("menu.deleted"), "failed": t("menu.failed"), "slow": t("menu.slow")}
+    return STOP_SCRIPT.replace("__TEXTS__", json.dumps(texts)).replace("__STOP_PATH__", STOP_PATH)
+
+
+def request_stop(delete_runtime):
+    """Leave word, from the proxy, that the ComfyUI page asked to stop. The notebook's own
+    process carries it out: only it can save to Drive and give the runtime back to Colab."""
+    (PRIVATE / "stop-status.json").unlink(missing_ok=True)
+    private_write(PRIVATE / "stop-request.json", json.dumps({"delete_runtime": bool(delete_runtime)}))
+
+
+def stop_request_state():
+    if (PRIVATE / "stop-request.json").exists():
+        return "pending"
+    return "failed" if (PRIVATE / "stop-status.json").exists() else "idle"
+
+
+def delete_colab_runtime():
+    """Finish writing to Drive, then give the runtime back: it stops using compute units."""
+    from google.colab import drive, runtime as colab
+    drive.flush_and_unmount()
+    colab.unassign()
+
+
+def carry_out_stop_request(config):
+    """Do what the stop button of the ComfyUI page asked for, if it asked. True once stopped."""
+    request = PRIVATE / "stop-request.json"
+    try:
+        wanted = json.loads(request.read_text())
+    except (OSError, ValueError):
+        return False
+    try:
+        stop(config, save=True)
+    except Exception as failure:
+        # Nothing was stopped, so the page is still there to say that it did not work.
+        private_write(PRIVATE / "stop-status.json", json.dumps({"state": "failed"}))
+        request.unlink(missing_ok=True)
+        print(t("menu.failed"), failure, flush=True)
+        return False
+    if wanted.get("delete_runtime") is True:
+        delete_colab_runtime()
+    return True
+
+
+STOP_WATCH = []
+STOP_WATCH_SECONDS = 2
+
+
+def follow_stop_requests(config):
+    """Watch for the stop button from the notebook's process, until stopped one way or another."""
+    cancelled = threading.Event()
+    STOP_WATCH[:] = [cancelled]
+
+    def watch():
+        while not cancelled.wait(STOP_WATCH_SECONDS):
+            if carry_out_stop_request(config):
+                return
+    threading.Thread(target=watch, daemon=True).start()
+
+
 PAIRING_PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
@@ -1235,6 +1414,22 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
         response.headers["Referrer-Policy"] = "no-referrer"
         raise response
 
+    async def stop_endpoint(request):
+        """The stop button's request, and afterwards its questions about how that is going."""
+        if request.method == "POST":
+            length = request.content_length
+            if length is None or length > 256:
+                raise web.HTTPBadRequest()
+            try:
+                delete_runtime = json.loads(await request.content.readexactly(length))["delete_runtime"]
+            except (asyncio.IncompleteReadError, ValueError, KeyError, TypeError):
+                raise web.HTTPBadRequest() from None
+            if not isinstance(delete_runtime, bool):
+                raise web.HTTPBadRequest()
+            request_stop(delete_runtime)
+        return web.json_response({"state": stop_request_state()}, status=202 if request.method == "POST" else 200,
+                                 headers={"Cache-Control": "no-store"})
+
     async def handler(request):
         if access:
             if not await signed_by_access(request):
@@ -1249,6 +1444,11 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
         if request.path == PAIRING_PATH:
             raise web.HTTPSeeOther(location="/")
         origin = refuse_other_sites(request)
+        if request.path == STOP_SCRIPT_PATH:
+            return web.Response(text=stop_button_script(), content_type="application/javascript", charset="utf-8",
+                                headers={"Cache-Control": "no-store"})
+        if request.path == STOP_PATH:
+            return await stop_endpoint(request)
         # What proves the visitor's identity stops here: custom nodes get neither the cookie nor Access's token.
         headers = {k: v for k, v in request.headers.items()
                    if k.lower() not in hop | {"cookie", "authorization"} and not k.lower().startswith("cf-access-")}
@@ -1260,6 +1460,11 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
         # connection URL from a link (e.g. Colab output). Loading the root page is safe.
         if request.method == "GET" and request.path == "/":
             headers = {k: v for k, v in headers.items() if k.lower() != "sec-fetch-site"}
+        page = request.method == "GET" and request.path in ("/", "/index.html")
+        if page:
+            # Asked for uncompressed: the stop button goes into this page before it is passed on.
+            headers = {k: v for k, v in headers.items() if k.lower() != "accept-encoding"}
+            headers["Accept-Encoding"] = "identity"
         # Preserve other backend cookies, but never disclose the proxy credential to custom nodes.
         # Behind Colab's forwarding its own sign-in cookies cannot be told apart, so none are passed on.
         backend_cookies = {} if forwarded else {
@@ -1303,8 +1508,14 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
         try:
             async with request.app[client_key].request(request.method, url, headers=headers,
                     data=request.content.iter_chunked(1024 * 1024), allow_redirects=False) as res:
-                response = web.StreamResponse(status=res.status,
-                    headers=[(k, v) for k, v in res.headers.items() if k.lower() not in hop - {"content-length"}])
+                page = (page and res.status == 200 and "Content-Encoding" not in res.headers
+                        and res.headers.get("Content-Type", "").lower().startswith("text/html"))
+                if page:
+                    response = web.Response(body=with_stop_button(await res.read()), headers=[
+                        (k, v) for k, v in res.headers.items() if k.lower() not in hop])
+                else:
+                    response = web.StreamResponse(status=res.status, headers=[
+                        (k, v) for k, v in res.headers.items() if k.lower() not in hop - {"content-length"}])
                 response.headers["Referrer-Policy"] = "no-referrer"
                 complete = request.method == "GET" and res.status == 200
                 response.headers["Cache-Control"] = ("private, max-age=31536000, immutable"
@@ -1315,6 +1526,8 @@ def create_proxy(config, upstream="http://127.0.0.1:8188", secure_cookie=True):
                         and "gzip" in request.headers.get("Accept-Encoding", "").lower()):
                     response.headers["Vary"] = "Accept-Encoding"
                     response.enable_compression(web.ContentCoding.gzip)
+                if page:
+                    return response
                 await response.prepare(request)
                 async for chunk in res.content.iter_chunked(1024 * 1024):
                     await response.write(chunk)
@@ -1676,6 +1889,8 @@ def start(config, mode, access=None, tunnel_token=""):
     refuse_unfinished_update()
     for name in SESSION_KEYS:
         config.pop(name, None)
+    for name in ("stop-request.json", "stop-status.json"):
+        (PRIVATE / name).unlink(missing_ok=True)
     config["mode"] = mode
     if mode == "colab":
         address = colab_forwarded_address(8189)
@@ -1729,6 +1944,7 @@ def start(config, mode, access=None, tunnel_token=""):
             print(t("start.colab_heading"))
             print(address)
             print(t("start.colab_note"))
+            follow_stop_requests(config)
             return
         logfile = PRIVATE / "tunnel.log"
         logfile.write_text("")
@@ -1764,6 +1980,7 @@ def start(config, mode, access=None, tunnel_token=""):
             print("https://" + access["hostname"] + "/")
             print(t("access.note"))
             print(t("start.url_auto_download"))
+            follow_stop_requests(config)
             return
         for _ in range(90):
             match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", logfile.read_text())
@@ -1773,6 +1990,7 @@ def start(config, mode, access=None, tunnel_token=""):
                 private_write(CONFIG, json.dumps(config))
                 show_pairing(config)
                 print(t("start.url_auto_download"))
+                follow_stop_requests(config)
                 return
             if tunnel.poll() is not None:
                 raise RuntimeError(t("start.tunnel_exited"))
@@ -1813,7 +2031,10 @@ def stop(config, save=True):
                     pass
         file.unlink()
     stop_app_processes()
-    (PRIVATE / "pairing.json").unlink(missing_ok=True)
+    for watch in STOP_WATCH:
+        watch.set()
+    for name in ("pairing.json", "stop-request.json", "stop-status.json"):
+        (PRIVATE / name).unlink(missing_ok=True)
     for name in SESSION_KEYS:
         config.pop(name, None)
     private_write(CONFIG, json.dumps(config))
