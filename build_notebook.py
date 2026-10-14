@@ -150,6 +150,10 @@ def build(language):
     APT_PACKAGES = "" #@param {{type:"string"}}
     #@markdown {t("settings.model_access")}
     MODEL_ACCESS = "direct" #@param ["direct", "copy"]
+    #@markdown {t("settings.sage_attention")}
+    USE_SAGE_ATTENTION = True #@param {{type:"boolean"}}
+    #@markdown {t("settings.fp16_accumulation")}
+    USE_FP16_ACCUMULATION = False #@param {{type:"boolean"}}
     if globals().get("COMFY_REF_OVERRIDE"):
         COMFY_REF = COMFY_REF_OVERRIDE
     print("COMFY_REF:", COMFY_REF)
@@ -171,7 +175,8 @@ print({said("unpack.done")})
     display(Javascript("google.colab.output.setIframeHeight(0, true, {{maxHeight: 300}})"))
     runtime.setup(root_name=DRIVE_FOLDER_NAME, comfy_ref=COMFY_REF,
                   checkpoint_seconds=CHECKPOINT_SECONDS, apt_packages=APT_PACKAGES.split(),
-                  restore=RESTORE_SAVED_ENVIRONMENT, model_access=MODEL_ACCESS)
+                  restore=RESTORE_SAVED_ENVIRONMENT, model_access=MODEL_ACCESS,
+                  sage_attention=USE_SAGE_ATTENTION, fp16_accumulation=USE_FP16_ACCUMULATION)
     print({said("setup.models_location")} + DRIVE_FOLDER_NAME + "/models/")
     ''')
     markdown("models")

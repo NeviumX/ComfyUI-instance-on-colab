@@ -71,6 +71,12 @@ Cloudflareのアカウント、CloudflareのDNSで管理しているドメイン
 - 更新に失敗した場合は元のバージョンへ戻し、Googleドライブの保存内容は変えません。
 - このノートブックは `COMFY_REF` の既定値で動作を確認しています。
 
+### 生成の高速化
+
+- **SageAttention（既定でON）:** attentionの計算を速くする [SageAttention](https://github.com/thu-ml/SageAttention) を使います。効果が出やすいのは動画モデルです。セットアップ時にそのGPUで試し、使えない場合は標準のattentionで起動します。どちらになったかは3の出力に表示されます。
+- **fp16 accumulation（既定でOFF）:** 1の `USE_FP16_ACCUMULATION` をONにすると、ComfyUIを `--fast fp16_accumulation` 付きで起動します。ComfyUIが品質の下がる可能性のある実験的な機能としているものです。
+- どちらも3のセットアップ時に反映されます。生成結果に不具合が出た場合は、1の `USE_SAGE_ATTENTION` または `USE_FP16_ACCUMULATION` をOFFにして、新しいランタイムで実行し直してください。
+
 ### 画面が表示されないとき
 
 - 初回の表示には、回線によって1分前後かかります。

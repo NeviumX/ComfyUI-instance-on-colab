@@ -42,6 +42,16 @@ APP_OUTPUT_LIMIT = 16 * 1024 ** 2
 ARCHIVE_LIMIT = 4 * 1024 ** 3
 MODEL_FOLDERS = ("checkpoints", "diffusion_models", "unet", "text_encoders", "clip", "clip_vision", "vae",
                  "loras", "controlnet", "upscale_models", "embeddings", "audio_encoders", "model_patches")
+# The release made of Python only: Triton, which PyTorch installs on Linux, compiles its kernels.
+SAGE_ATTENTION_PACKAGE = "sageattention==1.0.6"
+# The call ComfyUI makes, on a small input. The first call compiles the kernels for this GPU.
+SAGE_ATTENTION_PROBE = """
+import torch
+from sageattention import sageattn
+q, k, v = (torch.randn(1, 2, 256, 64, device="cuda", dtype=torch.float16) for _ in range(3))
+out = sageattn(q, k, v, is_causal=False, tensor_layout="HND", sm_scale=None, smooth_k=False)
+assert out.shape == q.shape and bool(torch.isfinite(out).all()), "SageAttention returned an unusable result"
+"""
 CLOUDFLARED_VERSION = "2026.10.0"
 # cloudflared's link to Cloudflare. Its default, QUIC, cannot get the UDP buffers it wants in a
 # Colab container ("failed to sufficiently increase receive buffer size"); HTTP/2 runs over TCP.
@@ -918,8 +928,29 @@ def install_cloudflared():
         partial.unlink(missing_ok=True)
 
 
+def prepare_sage_attention():
+    """Install SageAttention unless the environment has one already, and try it on this GPU.
+
+    Told to use it, ComfyUI exits at start when the package is absent, and logs an error at
+    every attention call when its kernels cannot be compiled. Both are found out here, and
+    ComfyUI is then started without it."""
+    py = BASE / ".venv/bin/python"
+    try:
+        found = run([py, "-c", "import importlib.util; print(importlib.util.find_spec('sageattention') is not None)"],
+                    app=True, capture=True, timeout=60)
+        if found.strip() != "True":  # A restored environment keeps the version it was saved with.
+            install_packages(SAGE_ATTENTION_PACKAGE)
+        run([py, "-c", SAGE_ATTENTION_PROBE], app=True, timeout=600)
+    except RuntimeError:
+        print(t("setup.sage_unavailable"))
+        return False
+    print(t("setup.sage_enabled"))
+    return True
+
+
 def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
-          checkpoint_seconds=120, apt_packages=(), restore=True, model_access="direct"):
+          checkpoint_seconds=120, apt_packages=(), restore=True, model_access="direct",
+          sage_attention=True, fp16_accumulation=False):
     if sys.platform != "linux" or not Path("/content").exists() or os.geteuid() != 0:
         raise RuntimeError(t("setup.not_colab"))
     if CONFIG.exists():
@@ -943,7 +974,8 @@ def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
         raise ValueError(t("setup.invalid_model_access"))
     config = {"drive_folder": root_name,
               "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-              "checkpoint_seconds": checkpoint_seconds, "model_access": model_access}
+              "checkpoint_seconds": checkpoint_seconds, "model_access": model_access,
+              "fp16_accumulation": bool(fp16_accumulation)}
     storage = drive_root(config)
     for directory in (storage, storage / "environment", *(storage / "models" / name for name in MODEL_FOLDERS)):
         directory.mkdir(parents=True, exist_ok=True)
@@ -1017,6 +1049,7 @@ def setup(*, root_name="ComfyUI-Colab", comfy_ref="v0.39.0",
             install_packages("-r", req)
     run([py, "-m", "pip", "check"], app=True)
     run([py, "-c", "import torch; print('PyTorch:', torch.__version__); print('CUDA build:', torch.version.cuda); torch.cuda.init(); print('GPU:', torch.cuda.get_device_name(0))"], app=True)
+    config["sage_attention"] = bool(sage_attention) and prepare_sage_attention()
     if model_access == "copy":
         print(t("setup.copying_models"))
     sync_models(config)
@@ -2060,14 +2093,18 @@ def isolation_report():
           "| /dev/net/tun:", t("common.present") if Path("/dev/net/tun").exists() else t("common.none"))
 
 
-def backend_command():
+def backend_command(config):
     repo = BASE / "environment/ComfyUI"
     return [str(BASE / ".venv/bin/python"), str(repo / "main.py"),
             "--listen", "127.0.0.1", "--port", "8188", "--enable-manager",
             "--base-directory", str(repo), "--user-directory", str(repo / "user"),
             "--input-directory", str(BASE / "input"), "--output-directory", str(BASE / "output"),
             "--temp-directory", str(BASE / "temp"), "--extra-model-paths-config", str(BASE / "models.yaml"),
-            "--database-url", "sqlite:///" + str(BASE / "database/comfyui.db")]
+            "--database-url", "sqlite:///" + str(BASE / "database/comfyui.db"),
+            # Only where setup installed and tried it: a runtime set up before that has no package.
+            *(["--use-sage-attention"] if config.get("sage_attention") else []),
+            # One named optimization: --fast alone turns on every experimental one ComfyUI has.
+            *(["--fast", "fp16_accumulation"] if config.get("fp16_accumulation") else [])]
 
 
 def supervise(config):
@@ -2084,7 +2121,7 @@ def supervise(config):
     env = application_environment()
     for _ in range(5):
         with (PRIVATE / "comfy.log").open("a") as log:
-            child = subprocess.Popen(app_command(backend_command()), cwd=BASE / "environment/ComfyUI", env=env,
+            child = subprocess.Popen(app_command(backend_command(config)), cwd=BASE / "environment/ComfyUI", env=env,
                                      stdout=log, stderr=subprocess.STDOUT)
             child.wait()
         try:

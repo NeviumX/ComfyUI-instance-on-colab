@@ -649,9 +649,61 @@ def test_root_application_process_preserves_gpu_settings_without_credentials(mon
 
 
 def test_backend_listens_on_loopback_only():
-    command = runtime.backend_command()
+    command = runtime.backend_command({})
     assert command[:2] == [str(runtime.BASE / ".venv/bin/python"), str(runtime.BASE / "environment/ComfyUI/main.py")]
     assert command[command.index("--listen") + 1] == "127.0.0.1"
+
+
+def test_comfyui_is_told_to_use_sage_attention_only_where_setup_enabled_it():
+    assert runtime.backend_command({"sage_attention": True})[-1] == "--use-sage-attention"
+    assert "--use-sage-attention" not in runtime.backend_command({"sage_attention": False})
+    # A runtime set up before the option existed has no package: ComfyUI would exit at start.
+    assert "--use-sage-attention" not in runtime.backend_command({"checkpoint_seconds": 120})
+
+
+def test_sage_attention_is_installed_when_absent_and_tried_before_it_is_enabled(monkeypatch, capsys):
+    py = str(runtime.BASE / ".venv/bin/python")
+    calls, state = [], {"present": "False\n", "probe_fails": False}
+    def run(args, **kwargs):
+        args = list(map(str, args))
+        calls.append(args)
+        assert kwargs.get("app")  # Never as root: the package and the probe are the application's.
+        if "find_spec('sageattention')" in args[-1]:
+            return state["present"]
+        if args[-1] == runtime.SAGE_ATTENTION_PROBE and state["probe_fails"]:
+            raise RuntimeError("python exited with 1")
+    monkeypatch.setattr(runtime, "run", run)
+    install = [py, "-m", "uv", "pip", "install", "--python", py, "sageattention==1.0.6"]
+    probe = [py, "-c", runtime.SAGE_ATTENTION_PROBE]
+    assert runtime.prepare_sage_attention() is True
+    assert calls[1:] == [install, probe]
+    assert runtime.t("setup.sage_enabled") in capsys.readouterr().out
+    # A restored environment that has it keeps its version, whichever that is.
+    calls.clear()
+    state["present"] = "True\n"
+    assert runtime.prepare_sage_attention() is True
+    assert calls[1:] == [probe]
+    # It cannot run here (no compiler, an unsupported GPU): setup goes on, ComfyUI starts without it.
+    state["probe_fails"] = True
+    assert runtime.prepare_sage_attention() is False
+    assert runtime.t("setup.sage_unavailable") in capsys.readouterr().out
+    compile(runtime.SAGE_ATTENTION_PROBE, "probe", "exec")
+
+
+def test_comfyui_gets_the_one_fast_option_only_where_setup_was_asked_for_it():
+    assert runtime.backend_command({"fp16_accumulation": True})[-2:] == ["--fast", "fp16_accumulation"]
+    assert "--fast" not in runtime.backend_command({"fp16_accumulation": False})
+    assert "--fast" not in runtime.backend_command({"checkpoint_seconds": 120})
+    # With both: --fast takes every word after it that is not an option, so nothing may follow its value.
+    assert runtime.backend_command({"sage_attention": True, "fp16_accumulation": True})[-3:] == [
+        "--use-sage-attention", "--fast", "fp16_accumulation"]
+
+
+def test_notebook_uses_sage_attention_unless_it_is_turned_off_and_fp16_accumulation_when_turned_on():
+    settings, setup = notebook_cell("DRIVE_FOLDER_NAME"), notebook_cell("runtime.setup(")
+    assert 'USE_SAGE_ATTENTION = True #@param {type:"boolean"}' in settings
+    assert 'USE_FP16_ACCUMULATION = False #@param {type:"boolean"}' in settings
+    assert "sage_attention=USE_SAGE_ATTENTION, fp16_accumulation=USE_FP16_ACCUMULATION" in setup
 
 
 def as_colab_root(monkeypatch):
@@ -816,8 +868,9 @@ def test_supervisor_preserves_driver_settings_without_notebook_credentials(tmp_p
     assert "HF_TOKEN" not in captured["env"] and "TBE_EPHEM_CREDS_ADDR" not in captured["env"]
     as_colab_root(monkeypatch)
     with pytest.raises(SpawnObserved):
-        runtime.supervise({"checkpoint_seconds": 120})
-    assert captured["args"][0] == "/usr/bin/setpriv" and captured["args"][-len(runtime.backend_command()):] == runtime.backend_command()
+        runtime.supervise({"checkpoint_seconds": 120, "sage_attention": True})
+    command = runtime.backend_command({"sage_attention": True})
+    assert captured["args"][0] == "/usr/bin/setpriv" and captured["args"][-len(command):] == command
 
 
 def test_application_library_path_never_includes_the_current_directory(monkeypatch):

@@ -64,16 +64,24 @@
         "EN": "Interval between automatic saves of the environment (seconds, 60 or more)."
       },
       "restore": {
-        "JP": "Googleドライブに保存した環境（カスタムノード・設定）を復元する。OFFにすると新しい環境で始めます。",
-        "EN": "Restore the environment saved on Google Drive (custom nodes and settings). Turn off to start with a fresh one."
+        "JP": "Googleドライブに保存した環境を復元する。OFFにすると新しい環境で始めます。",
+        "EN": "Restore the environment saved on Google Drive. Turn off to start with a fresh one."
       },
       "apt_packages": {
         "JP": "追加で必要なOSパッケージ（空白区切り、任意）。",
         "EN": "Extra OS packages you need (space separated, optional)."
       },
       "model_access": {
-        "JP": "Googleドライブのモデルの使い方。`direct`: コピーせずに直接読み込みます（各モデルは最初に使うときに読み込まれ、初回は時間がかかります）。`copy`: セットアップ時にすべてColabへコピーします（モデル全体の空き容量が必要です）。",
+        "JP": "Googleドライブのモデルの使い方。`direct`: コピーせずに直接読み込みます。各モデルは最初に使うときに読み込まれ、初回は時間がかかります。`copy`: セットアップ時にすべてColabへコピーします。モデル全体の空き容量が必要です。",
         "EN": "How the models on Google Drive are used. `direct`: read in place without copying (each model is fetched the first time it is used, so its first load takes longer). `copy`: all of them are copied to Colab during setup (needs free space for all models)."
+      },
+      "sage_attention": {
+        "JP": "SageAttentionを使います。（attentionの計算が速くなります。効果が出やすいのは動画モデルです）。セットアップ時にこのGPUで試し、使えない場合は標準のattentionで起動します。生成結果に不具合が出た場合はOFFにして、新しいランタイムで実行し直してください。",
+        "EN": "Use SageAttention (faster attention; the gain shows mostly with video models). Setup tries it on this GPU and starts ComfyUI with the standard attention if it cannot be used. If your results come out wrong, turn it off and run again on a new runtime."
+      },
+      "fp16_accumulation": {
+        "JP": "`--fast fp16_accumulation` を使う（fp16の行列演算が速くなり、モデルをfp16で動かすことを優先します）。ComfyUIが品質の下がる可能性のある実験的な機能としているため、既定はOFFです。生成結果に不具合が出た場合はOFFにして、新しいランタイムで実行し直してください。",
+        "EN": "Use `--fast fp16_accumulation` (faster fp16 matrix multiplication, and models are run in fp16 where they can be). Off by default because ComfyUI calls it an experimental feature that may lower quality. If your results come out wrong, turn it off and run again on a new runtime."
       }
     },
     "unpack": {
@@ -126,8 +134,8 @@
         "EN": "4. Download a model from a URL (Hugging Face / Civitai)"
       },
       "url": {
-        "JP": "Hugging Faceはファイルのページ（Files and versionsで開いたURL）、Civitaiはバージョンを選んだページかダウンロードリンクのURLを貼り付けます。",
-        "EN": "Paste the URL of the file page on Hugging Face (opened under Files and versions), or on Civitai the page with a version selected or the download link."
+        "JP": "Hugging FaceはFiles and versionsで開いたURL、Civitaiはバージョンを選んだページかダウンロードリンクのURLを貼り付けます。",
+        "EN": "Paste the URL of the file page on Hugging Face opened under Files and versions, or on Civitai the page with a version selected or the download link."
       },
       "folder": {
         "JP": "保存先のフォルダー（一覧にない場合は入力できます）。",
@@ -150,8 +158,8 @@
         "EN": "To download, enter a URL, check DOWNLOAD_NOW and run the cell."
       },
       "runtime_only": {
-        "JP": "Googleドライブへ保存せず、このランタイムだけで使う（ランタイムを削除すると消えます）。",
-        "EN": "Use it on this runtime only, without saving it to Google Drive (it is gone when the runtime is deleted)."
+        "JP": "Googleドライブへ保存せず、このランタイムだけで使う。ランタイムを削除すると消えます。",
+        "EN": "Use it on this runtime only, without saving it to Google Drive. It is gone when the runtime is deleted."
       }
     },
     "refresh": {
@@ -206,7 +214,7 @@
         "EN": "6-2. Start and connect: Public URL"
       },
       "new_code": {
-        "JP": "6-2で起動した後、別の端末を追加する（またはコードの期限が切れた）ときにONにして実行すると、新しいペアリングコードを発行します。",
+        "JP": "6-2で起動した後、別の端末を追加するかまたはコードの期限が切れたときにONにして実行すると、新しいペアリングコードを発行します。",
         "EN": "After starting with 6-2, check this and run the cell to issue a new pairing code, for another device or when the code has expired."
       }
     },
@@ -614,6 +622,14 @@
       "invalid_model_access": {
         "JP": "MODEL_ACCESS は direct か copy を指定してください。",
         "EN": "MODEL_ACCESS must be direct or copy."
+      },
+      "sage_enabled": {
+        "JP": "SageAttentionを使います。",
+        "EN": "Using SageAttention."
+      },
+      "sage_unavailable": {
+        "JP": "SageAttentionをこのランタイムで使えないため、標準のattentionで起動します。原因は上の出力を確認してください。",
+        "EN": "SageAttention cannot be used on this runtime, so ComfyUI starts with the standard attention. See the output above for the cause."
       }
     },
     "download": {

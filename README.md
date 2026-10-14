@@ -71,6 +71,12 @@ You need a Cloudflare account, a domain managed by Cloudflare DNS, and Cloudflar
 - If the update fails, ComfyUI is put back to its previous version and nothing on Drive changes.
 - This notebook was tested with the default `COMFY_REF`.
 
+### Faster generation
+
+- **SageAttention (on by default):** [SageAttention](https://github.com/thu-ml/SageAttention) makes attention faster. The gain shows mostly with video models. Setup tries it on the GPU of the runtime and starts ComfyUI with the standard attention if it cannot be used. The output of cell 3 says which of the two it is.
+- **fp16 accumulation (off by default):** turn on `USE_FP16_ACCUMULATION` in cell 1 to start ComfyUI with `--fast fp16_accumulation`. ComfyUI calls it an experimental feature that may lower quality.
+- Both take effect during setup in cell 3. If your results come out wrong, turn off `USE_SAGE_ATTENTION` or `USE_FP16_ACCUMULATION` in cell 1 and run again on a new runtime.
+
 ### When the UI does not appear
 
 - The first load can take around a minute, depending on your connection.
