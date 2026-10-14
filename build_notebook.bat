@@ -1,5 +1,5 @@
 @echo off
-rem Rebuild both notebooks from colab_runtime.py and translations.json. Double-click to run.
+rem Rebuild both notebooks from the runtime folder and translations.json. Double-click to run.
 setlocal
 cd /d "%~dp0"
 set "PYTHON=.venv\Scripts\python.exe"

@@ -1,3 +1,6 @@
+import subprocess
+import threading
+import time
 import asyncio
 import io
 import json
@@ -12,13 +15,13 @@ import nbformat
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import colab_runtime as runtime
+import runtime
 
 
 @pytest.mark.parametrize("value", ["../secret", "/root/key", "models/../secret", "C:\\key", "a\\b", "./a", "a\x00b"])
 def test_reject_escaping_paths(value):
     with pytest.raises(ValueError):
-        runtime.safe_relative(value)
+        runtime.filesystem.safe_relative(value)
 
 
 @pytest.mark.parametrize("member_type,name,link", [(tarfile.REGTYPE, "../secret", ""),
@@ -35,7 +38,7 @@ def test_reject_unsafe_archive(tmp_path, member_type, name, link):
     dest = tmp_path / "restored"
     dest.mkdir()
     with pytest.raises(ValueError):
-        runtime.restore_archive(archive, dest)
+        runtime.environment.restore_archive(archive, dest)
     assert not list(dest.iterdir())
 
 
@@ -52,10 +55,10 @@ def test_snapshot_preserves_node_models_code_and_user_data(tmp_path):
     archive = tmp_path / "environment.tar.gz"
     with tarfile.open(archive, "w:gz") as tf:
         for child in env.iterdir():
-            tf.add(child, arcname=child.name, filter=runtime.archive_filter)
+            tf.add(child, arcname=child.name, filter=runtime.environment.archive_filter)
     dest = tmp_path / "restored"
     dest.mkdir()
-    runtime.restore_archive(archive, dest)
+    runtime.environment.restore_archive(archive, dest)
     for name in expected:
         assert (dest / name).read_text() == name
     for name in excluded:
@@ -66,11 +69,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def embedded_runtime(nb):
+    """The package files cell 2 writes, as {file name: source}."""
     import ast
-    cell = next(c.source for c in nb.cells if c.cell_type == "code" and "write_text(" in c.source)
-    write_call = next(node for node in ast.walk(ast.parse(cell)) if isinstance(node, ast.Call)
-                      and isinstance(node.func, ast.Attribute) and node.func.attr == "write_text")
-    return ast.literal_eval(write_call.args[0])
+    cell = next(c.source for c in nb.cells if c.cell_type == "code" and "FILES = " in c.source)
+    files = next(node for node in ast.parse(cell).body if isinstance(node, ast.Assign)
+                 and getattr(node.targets[0], "id", "") == "FILES")
+    return ast.literal_eval(files.value)
 
 
 @pytest.mark.parametrize("language", ["JP", "EN"])
@@ -85,7 +89,8 @@ def test_notebook_is_valid_self_contained_and_compilable(language):
         if cell.cell_type == "code":
             assert cell.outputs == [] and cell.execution_count is None
             compile(cell.source, "notebook-cell", "exec")
-    assert embedded_runtime(nb) == build_notebook.runtime_source(language)
+    assert embedded_runtime(nb) == build_notebook.runtime_files(language)
+    assert set(embedded_runtime(nb)) == {path.name for path in (ROOT / "runtime").glob("*.py")}
     source ="\n".join(c.source for c in nb.cells if c.cell_type == "code")
     assert "drive.mount(" in source
     assert "GDRIVE_OAUTH" not in source
@@ -173,18 +178,22 @@ def test_runtime_messages_come_from_the_translation_file():
     import ast
     import build_notebook
     import copy
-    source = (ROOT / "colab_runtime.py").read_text(encoding="utf-8")
+    sources = build_notebook.runtime_sources()
     sections = build_notebook.translations()["runtime"]
-    build_notebook.check_runtime(source, sections)
+    build_notebook.check_runtime(sources, sections)
     # The runtime holds no text of its own; run from the source tree it speaks Japanese.
-    assert not build_notebook.JAPANESE.search(source)
-    assert runtime.MESSAGES == build_notebook.runtime_messages("JP")
-    assert len(runtime.MESSAGES) > 100
-    assert runtime.t("command.exit_code", stage="apt-get", code=3) == "apt-get が終了コード 3 で失敗しました。直前の出力を確認してください。"
-    # An embedded runtime is the source with the messages of its language on that one line.
+    assert not any(build_notebook.JAPANESE.search(source) for source in sources.values())
+    assert runtime.messages.MESSAGES == build_notebook.runtime_messages("JP")
+    assert len(runtime.messages.MESSAGES) > 100
+    assert runtime.messages.t("command.exit_code", stage="apt-get", code=3) == "apt-get が終了コード 3 で失敗しました。直前の出力を確認してください。"
+    # An embedded runtime is the package with the messages of its language on that one line of messages.py.
+    source = sources["messages.py"]
     placeholder = build_notebook.MESSAGES_LINE.search(source).group(0)
     for language in ("JP", "EN"):
-        embedded = build_notebook.runtime_source(language)
+        files = build_notebook.runtime_files(language)
+        assert {name: text for name, text in files.items() if name != "messages.py"} == {
+            name: text for name, text in sources.items() if name != "messages.py"}
+        embedded = files["messages.py"]
         begin = embedded.index("MESSAGES = {\n")
         finish = embedded.index("\n}\n", begin) + 2
         assert ast.literal_eval(embedded[begin + len("MESSAGES = "):finish]) == build_notebook.runtime_messages(language)
@@ -194,7 +203,7 @@ def test_runtime_messages_come_from_the_translation_file():
         changed = copy.deepcopy(sections)
         change(changed)
         with pytest.raises(error, match=match):
-            build_notebook.check_runtime(source, changed)
+            build_notebook.check_runtime(sources, changed)
     # A translation that drops a value, formats it differently or shows one the code does not give.
     refused(lambda s: s["command"]["exit_code"].update(EN="{stage} failed."), "command.exit_code shows different values")
     refused(lambda s: s["command"]["done"].update(EN="Done: {stage} ({seconds:.1f}s)"), "command.done shows different values")
@@ -205,46 +214,45 @@ def test_runtime_messages_come_from_the_translation_file():
     refused(lambda s: s["stop"]["done"].pop("EN"), "EN", KeyError)
     refused(lambda s: s["stop"].update(leftover={"JP": "未使用", "EN": "Unused"}), "does not use: stop.leftover")
     refused(lambda s: s["stop"]["done"].update(EN="停止しました。"), "stop.done has Japanese in its English text")
-    # Text written into the code, or a key the build cannot see.
-    with pytest.raises(ValueError, match="holds Japanese text"):
-        build_notebook.check_runtime(source + 'print("停止しました。")\n', sections)
-    with pytest.raises(ValueError, match="takes a literal key and named values"):
-        build_notebook.check_runtime(source + 'print(t("stop." + "done"))\n', sections)
+    # Text written into the code, or a key the build cannot see, in any module of the package.
+    with pytest.raises(ValueError, match="runtime/service.py holds Japanese text"):
+        build_notebook.check_runtime({**sources, "service.py": sources["service.py"] + 'print("停止しました。")\n'}, sections)
+    with pytest.raises(ValueError, match="runtime/proxy.py line .* takes a literal key and named values"):
+        build_notebook.check_runtime({**sources, "proxy.py": sources["proxy.py"] + 'print(t("stop." + "done"))\n'}, sections)
 
 
 def test_embedded_runtime_needs_no_other_file_and_reports_in_its_language(tmp_path, monkeypatch, capsys):
     import build_notebook
-    import importlib.util
+    import importlib
     from types import SimpleNamespace
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=3, stdout="", stderr="boom"))
 
     def embedded(language):
         # Alone in a folder, as on Colab: no translations.json next to it.
-        module_path = tmp_path / language / "comfy_colab_runtime.py"
-        module_path.parent.mkdir()
-        module_path.write_text(build_notebook.runtime_source(language), encoding="utf-8")
-        spec = importlib.util.spec_from_file_location("comfy_colab_runtime_" + language, module_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=3, stdout="", stderr="boom"))
-        return module
+        package = tmp_path / language / f"comfy_colab_runtime_{language.lower()}"
+        package.mkdir(parents=True)
+        for name, text in build_notebook.runtime_files(language).items():
+            (package / name).write_text(text, encoding="utf-8")
+        monkeypatch.syspath_prepend(str(package.parent))
+        return importlib.import_module(package.name)
 
     english = embedded("EN")
     with pytest.raises(ValueError, match="Specify a safe relative path"):
-        english.safe_relative("../secret")
+        english.filesystem.safe_relative("../secret")
     with pytest.raises(ValueError, match="For Civitai, give the URL"):
-        english.parse_model_url("https://civitai.com/models/12345/name")
+        english.downloads.parse_model_url("https://civitai.com/models/12345/name")
     with pytest.raises(RuntimeError, match="lines other than pinned versions .* Replace them with regular pip packages"):
-        english.checked_lock("-e git+https://example.com/x.git#egg=x\n")
+        english.dependencies.checked_lock("-e git+https://example.com/x.git#egg=x\n")
     with pytest.raises(RuntimeError, match="apt-get failed with exit code 3"):
-        english.run(["apt-get", "update"])
+        english.commands.run(["apt-get", "update"])
     assert "Running: apt-get" in capsys.readouterr().out
     assert english.redact("https://quick-tunnel.trycloudflare.com/?access_key=abc") == "https://[REDACTED].trycloudflare.com/?access_key=[REDACTED]"
 
     japanese = embedded("JP")
     with pytest.raises(ValueError, match="安全な相対パスを指定してください"):
-        japanese.safe_relative("../secret")
+        japanese.filesystem.safe_relative("../secret")
     with pytest.raises(RuntimeError, match="apt-get が終了コード 3 で失敗しました"):
-        japanese.run(["apt-get", "update"])
+        japanese.commands.run(["apt-get", "update"])
     assert "実行中: apt-get" in capsys.readouterr().out
 
 
@@ -271,7 +279,7 @@ def test_proxy_relays_websocket_for_browser_offering_compression():
         app.router.add_get("/ws", backend)
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
                     signed_in(client, server)
@@ -299,7 +307,7 @@ def test_proxy_opens_root_page_when_followed_from_another_site():
         app.router.add_route("*", "/{path:.*}", backend)
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
                     signed_in(client, server)
@@ -339,11 +347,11 @@ def test_diagnosis_counts_what_blocks_the_frontend_splash(capsys, broken, expect
         app.router.add_route("*", "/{path:.*}", backend)
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 base = str(server.make_url("/")).rstrip("/")
-                assert await runtime.probe_frontend(base) == len(runtime.STARTUP_ROUTES) + 1  # No cookie: all 401.
-                return await runtime.probe_frontend(base, {"Cookie": "comfy_colab=test-cookie-secret"})
+                assert await runtime.diagnosis.probe_frontend(base) == len(runtime.diagnosis.STARTUP_ROUTES) + 1  # No cookie: all 401.
+                return await runtime.diagnosis.probe_frontend(base, {"Cookie": "comfy_colab=test-cookie-secret"})
     assert asyncio.run(scenario()) == expected
     report = capsys.readouterr().out
     assert "画面のJS/CSS 2件" in report and "test-cookie-secret" not in report
@@ -364,28 +372,28 @@ def test_start_refuses_to_open_a_tunnel_when_the_proxy_is_not_the_one_listening(
             return 1  # The port was taken: the real proxy exited at once.
 
     # Whatever took the port answers the way the proxy would.
-    monkeypatch.setattr(runtime, "PRIVATE", tmp_path)
-    monkeypatch.setattr(runtime, "CONFIG", tmp_path / "session.json")
-    monkeypatch.setattr(runtime.subprocess, "Popen", Process)
-    monkeypatch.setattr(runtime.os, "killpg", lambda pid, sig: None, raising=False)
-    monkeypatch.setattr(runtime.Path, "exists", lambda self: False)
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path)
+    monkeypatch.setattr(runtime.paths, "CONFIG", tmp_path / "session.json")
+    monkeypatch.setattr(subprocess, "Popen", Process)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: None, raising=False)
+    monkeypatch.setattr(Path, "exists", lambda self: False)
     monkeypatch.setitem(sys.modules, "requests", SimpleNamespace(
         get=lambda url, timeout: SimpleNamespace(ok=True, status_code=401), RequestException=OSError))
     with pytest.raises(RuntimeError, match="認証プロキシが終了しました"):
-        runtime.start({"drive_folder": "ComfyUI-Colab"}, "tunnel")
+        runtime.service.start({"drive_folder": "ComfyUI-Colab"}, "tunnel")
     assert spawned == ["proxy"]
 
 
 def test_saved_apt_packages_are_reported_not_installed():
     saved = {"apt_packages": ["libgl1", "openssh-server", "bad name;rm", 7, "aria2"]}
-    assert runtime.unlisted_apt_packages(saved, ["aria2"]) == ["libgl1", "openssh-server"]
-    assert runtime.unlisted_apt_packages({}, []) == [] and runtime.unlisted_apt_packages(["not", "a", "dict"], []) == []
+    assert runtime.dependencies.unlisted_apt_packages(saved, ["aria2"]) == ["libgl1", "openssh-server"]
+    assert runtime.dependencies.unlisted_apt_packages({}, []) == [] and runtime.dependencies.unlisted_apt_packages(["not", "a", "dict"], []) == []
 
 
 def test_displayed_logs_hide_keys_tokens_and_the_tunnel_address():
     log = ("INF |  https://quick-test-tunnel.trycloudflare.com  |\n"
            "GET /?access_key=abc_DEF-123 Authorization: Bearer token.value hf_AbCdEf123")
-    shown = runtime.redact(log)
+    shown = runtime.service.redact(log)
     for secret in ("quick-test-tunnel", "abc_DEF-123", "token.value", "hf_AbCdEf123"):
         assert secret not in shown
     assert "trycloudflare.com" in shown and "access_key=[REDACTED]" in shown
@@ -413,7 +421,7 @@ def test_proxy_compresses_text_caches_hashed_files_and_rejects_odd_credentials()
         app.router.add_route("*", "/{path:.*}", backend)
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession() as stranger:
                     # Anyone can send these; they must be refused, not crash the comparison.
@@ -455,13 +463,13 @@ def test_proxy_compresses_text_caches_hashed_files_and_rejects_odd_credentials()
                                   "package==1.0 --hash=sha256:00", "package>=1.0"])
 def test_lock_with_pip_options_or_local_paths_is_refused(line):
     with pytest.raises(RuntimeError, match="固定バージョン以外"):
-        runtime.checked_lock("aiohttp==3.14.4\n" + line + "\n")
+        runtime.dependencies.checked_lock("aiohttp==3.14.4\n" + line + "\n")
 
 
 def test_lock_accepts_what_pip_freeze_writes_for_pinned_packages():
     text = ("aiohttp==3.14.4\ntorch==2.11.0+cu130\nruamel.yaml==0.18.6\n"
             "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git@6fdee8f\n")
-    assert runtime.checked_lock(text) == text
+    assert runtime.dependencies.checked_lock(text) == text
 
 
 def test_cloudflared_is_pinned_and_refused_when_the_download_differs(tmp_path, monkeypatch):
@@ -484,63 +492,63 @@ def test_cloudflared_is_pinned_and_refused_when_the_download_differs(tmp_path, m
         requested.append(url)
         return Download()
 
-    monkeypatch.setattr(runtime, "PRIVATE", tmp_path)
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path)
     monkeypatch.setitem(sys.modules, "requests", SimpleNamespace(get=get))
     with pytest.raises(RuntimeError, match="SHA256"):
-        runtime.install_cloudflared()
-    assert requested == [f"https://github.com/cloudflare/cloudflared/releases/download/{runtime.CLOUDFLARED_VERSION}/cloudflared-linux-amd64"]
+        runtime.cloudflare.install_cloudflared()
+    assert requested == [f"https://github.com/cloudflare/cloudflared/releases/download/{runtime.cloudflare.CLOUDFLARED_VERSION}/cloudflared-linux-amd64"]
     assert not list(tmp_path.iterdir())
     import hashlib
-    monkeypatch.setattr(runtime, "CLOUDFLARED_SHA256", hashlib.sha256(b"not the published binary").hexdigest())
-    runtime.install_cloudflared()
+    monkeypatch.setattr(runtime.cloudflare, "CLOUDFLARED_SHA256", hashlib.sha256(b"not the published binary").hexdigest())
+    runtime.cloudflare.install_cloudflared()
     assert (tmp_path / "cloudflared").read_bytes() == b"not the published binary"
 
 
 
 @pytest.fixture
 def storage(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime, "BASE", tmp_path / "session")
-    monkeypatch.setattr(runtime, "PRIVATE", tmp_path / "private")
-    monkeypatch.setattr(runtime, "DRIVE_MOUNT", runtime.PRIVATE / "drive")
-    (runtime.DRIVE_MOUNT / "MyDrive" / "ComfyUI-Colab" / "models").mkdir(parents=True)
-    (runtime.BASE / "models").mkdir(parents=True)
-    monkeypatch.setattr(runtime, "run", lambda *a, **k: None)
+    monkeypatch.setattr(runtime.paths, "BASE", tmp_path / "session")
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path / "private")
+    monkeypatch.setattr(runtime.paths, "DRIVE_MOUNT", runtime.paths.PRIVATE / "drive")
+    (runtime.paths.DRIVE_MOUNT / "MyDrive" / "ComfyUI-Colab" / "models").mkdir(parents=True)
+    (runtime.paths.BASE / "models").mkdir(parents=True)
+    monkeypatch.setattr(runtime.commands, "run", lambda *a, **k: None)
     return {"drive_folder": "ComfyUI-Colab"}
 
 
 def test_manual_models_refresh_and_manager_downloads_preserve_drive(storage):
-    models = runtime.drive_root(storage) / "models"
+    models = runtime.drive.drive_root(storage) / "models"
     (models / "diffusion_models").mkdir()
     manual = models / "diffusion_models/manual.safetensors"
     manual.write_bytes(b"manually uploaded model")
     (models / "incomplete.part").write_bytes(b"partial")
-    assert runtime.sync_models(storage) == 1
-    local = runtime.BASE / "models/diffusion_models/manual.safetensors"
+    assert runtime.drive.sync_models(storage) == 1
+    local = runtime.paths.BASE / "models/diffusion_models/manual.safetensors"
     assert local.read_bytes() == manual.read_bytes()
-    assert not (runtime.BASE / "models/incomplete.part").exists()
-    assert runtime.sync_models(storage) == 0
+    assert not (runtime.paths.BASE / "models/incomplete.part").exists()
+    assert runtime.drive.sync_models(storage) == 0
     # A stale local model must not overwrite a user's newer Drive upload.
     manual.write_bytes(b"new manually uploaded model")
-    new = runtime.BASE / "models/diffusion_models/manager.safetensors"
+    new = runtime.paths.BASE / "models/diffusion_models/manager.safetensors"
     new.write_bytes(b"manager model")
-    runtime.save_new_cache_models(storage, force=True)
+    runtime.drive.save_new_cache_models(storage, force=True)
     assert manual.read_bytes() == b"new manually uploaded model"
     assert (models / "diffusion_models/manager.safetensors").read_bytes() == b"manager model"
-    assert runtime.sync_models(storage) == 1
+    assert runtime.drive.sync_models(storage) == 1
     assert local.read_bytes() == manual.read_bytes()
     manual.unlink()
-    runtime.save_new_cache_models(storage, force=True)
+    runtime.drive.save_new_cache_models(storage, force=True)
     assert not manual.exists()  # A removed Drive model is not resurrected by the cache.
 
 
 def test_model_url_builders():
-    assert runtime.model_download_url("Hugging Face", hf_repo="author/model", hf_file="split/model.safetensors", hf_revision="refs/pr/2") == "https://huggingface.co/author/model/resolve/refs%2Fpr%2F2/split/model.safetensors"
-    assert runtime.model_download_url("Civitai", civitai_version="123456") == "https://civitai.com/api/download/models/123456"
+    assert runtime.downloads.model_download_url("Hugging Face", hf_repo="author/model", hf_file="split/model.safetensors", hf_revision="refs/pr/2") == "https://huggingface.co/author/model/resolve/refs%2Fpr%2F2/split/model.safetensors"
+    assert runtime.downloads.model_download_url("Civitai", civitai_version="123456") == "https://civitai.com/api/download/models/123456"
     for value in ("0", "-1", "123?token=secret"):
         with pytest.raises(ValueError):
-            runtime.model_download_url("Civitai", civitai_version=value)
+            runtime.downloads.model_download_url("Civitai", civitai_version=value)
     with pytest.raises(ValueError):
-        runtime.model_download_url("Hugging Face", hf_repo="author/model", hf_file="../key")
+        runtime.downloads.model_download_url("Hugging Face", hf_repo="author/model", hf_file="../key")
 
 
 def fake_requests(monkeypatch, responses):
@@ -584,26 +592,26 @@ def test_model_download_redirect_strips_token_and_saves_to_drive(storage, monkey
         {"headers": {"Content-Type": "application/octet-stream"}, "data": b"downloaded model"}])
     import hashlib
     digest = hashlib.sha256(b"downloaded model").hexdigest()
-    runtime.download_model(storage, "https://huggingface.co/author/repo/resolve/main/model.safetensors",
+    runtime.downloads.download_model(storage, "https://huggingface.co/author/repo/resolve/main/model.safetensors",
                            "diffusion_models/file.safetensors", digest, "HF_SECRET")
     assert session.calls[0][1]["headers"]["Authorization"] == "Bearer HF_SECRET"
     assert "Authorization" not in session.calls[1][1]["headers"]
     assert not session.trust_env
-    assert (runtime.drive_root(storage) / "models/diffusion_models/file.safetensors").read_bytes() == b"downloaded model"
-    assert (runtime.BASE / "models/diffusion_models/file.safetensors").read_bytes() == b"downloaded model"
+    assert (runtime.drive.drive_root(storage) / "models/diffusion_models/file.safetensors").read_bytes() == b"downloaded model"
+    assert (runtime.paths.BASE / "models/diffusion_models/file.safetensors").read_bytes() == b"downloaded model"
 
 
 def test_model_download_wrong_hash_cleans_partial_and_preserves_existing(storage, monkeypatch):
     fake_requests(monkeypatch, [{"data": b"wrong content"}])
     with pytest.raises(RuntimeError, match="SHA256"):
-        runtime.download_model(storage, "https://civitai.com/api/download/models/1",
+        runtime.downloads.download_model(storage, "https://civitai.com/api/download/models/1",
                                "loras/file.safetensors", "0" * 64)
-    models = runtime.drive_root(storage) / "models"
+    models = runtime.drive.drive_root(storage) / "models"
     assert not list(models.rglob("*.part"))
     assert not (models / "loras/file.safetensors").exists()
     (models / "loras/file.safetensors").write_bytes(b"existing model")
     with pytest.raises(FileExistsError):
-        runtime.download_model(storage, "https://civitai.com/api/download/models/1", "loras/file.safetensors")
+        runtime.downloads.download_model(storage, "https://civitai.com/api/download/models/1", "loras/file.safetensors")
     assert (models / "loras/file.safetensors").read_bytes() == b"existing model"
 
 
@@ -612,7 +620,7 @@ def test_model_download_failure_hides_signed_url(storage, monkeypatch):
     session, error = fake_requests(monkeypatch, responses)
     responses.append(error("https://cdn.example/?signature=SECRET"))
     with pytest.raises(RuntimeError) as exc:
-        runtime.download_model(storage, "https://civitai.com/api/download/models/1", "loras/file.safetensors")
+        runtime.downloads.download_model(storage, "https://civitai.com/api/download/models/1", "loras/file.safetensors")
     assert "SECRET" not in str(exc.value) and exc.value.__suppress_context__
 
 
@@ -621,9 +629,9 @@ def test_model_download_failure_hides_signed_url(storage, monkeypatch):
 def test_reject_unsafe_redirects(storage, monkeypatch, url):
     session, _ = fake_requests(monkeypatch, [{"status": 302, "headers": {"Location": url}}])
     with pytest.raises(ValueError):
-        runtime.download_model(storage, "https://civitai.com/api/download/models/1", "loras/file.safetensors", token_secret="secret")
+        runtime.downloads.download_model(storage, "https://civitai.com/api/download/models/1", "loras/file.safetensors", token_secret="secret")
     assert len(session.calls) == 1
-    assert not list((runtime.drive_root(storage) / "models").rglob("*.part"))
+    assert not list((runtime.drive.drive_root(storage) / "models").rglob("*.part"))
 
 
 def test_root_application_process_preserves_gpu_settings_without_credentials(monkeypatch):
@@ -638,31 +646,31 @@ def test_root_application_process_preserves_gpu_settings_without_credentials(mon
         captured.update(kwargs)
         captured["args"] = args
         return SimpleNamespace(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
-    runtime.run(["python", "node_install.py"], app=True)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runtime.commands.run(["python", "node_install.py"], app=True)
     assert "HF_TOKEN" not in captured["env"] and "TBE_EPHEM_CREDS_ADDR" not in captured["env"]
     assert captured["args"] == ["python", "node_install.py"]
     assert captured["env"]["LD_LIBRARY_PATH"] == "/usr/lib64-nvidia:/usr/local/cuda/lib64"
     assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert captured["env"]["NVIDIA_DRIVER_CAPABILITIES"] == "compute,utility"
-    assert captured["env"]["HOME"] == str(runtime.BASE / "home")
+    assert captured["env"]["HOME"] == str(runtime.paths.BASE / "home")
 
 
 def test_backend_listens_on_loopback_only():
-    command = runtime.backend_command({})
-    assert command[:2] == [str(runtime.BASE / ".venv/bin/python"), str(runtime.BASE / "environment/ComfyUI/main.py")]
+    command = runtime.service.backend_command({})
+    assert command[:2] == [str(runtime.paths.BASE / ".venv/bin/python"), str(runtime.paths.BASE / "environment/ComfyUI/main.py")]
     assert command[command.index("--listen") + 1] == "127.0.0.1"
 
 
 def test_comfyui_is_told_to_use_sage_attention_only_where_setup_enabled_it():
-    assert runtime.backend_command({"sage_attention": True})[-1] == "--use-sage-attention"
-    assert "--use-sage-attention" not in runtime.backend_command({"sage_attention": False})
+    assert runtime.service.backend_command({"sage_attention": True})[-1] == "--use-sage-attention"
+    assert "--use-sage-attention" not in runtime.service.backend_command({"sage_attention": False})
     # A runtime set up before the option existed has no package: ComfyUI would exit at start.
-    assert "--use-sage-attention" not in runtime.backend_command({"checkpoint_seconds": 120})
+    assert "--use-sage-attention" not in runtime.service.backend_command({"checkpoint_seconds": 120})
 
 
 def test_sage_attention_is_installed_when_absent_and_tried_before_it_is_enabled(monkeypatch, capsys):
-    py = str(runtime.BASE / ".venv/bin/python")
+    py = str(runtime.paths.BASE / ".venv/bin/python")
     calls, state = [], {"present": "False\n", "probe_fails": False}
     def run(args, **kwargs):
         args = list(map(str, args))
@@ -670,32 +678,32 @@ def test_sage_attention_is_installed_when_absent_and_tried_before_it_is_enabled(
         assert kwargs.get("app")  # Never as root: the package and the probe are the application's.
         if "find_spec('sageattention')" in args[-1]:
             return state["present"]
-        if args[-1] == runtime.SAGE_ATTENTION_PROBE and state["probe_fails"]:
+        if args[-1] == runtime.dependencies.SAGE_ATTENTION_PROBE and state["probe_fails"]:
             raise RuntimeError("python exited with 1")
-    monkeypatch.setattr(runtime, "run", run)
+    monkeypatch.setattr(runtime.commands, "run", run)
     install = [py, "-m", "uv", "pip", "install", "--python", py, "sageattention==1.0.6"]
-    probe = [py, "-c", runtime.SAGE_ATTENTION_PROBE]
-    assert runtime.prepare_sage_attention() is True
+    probe = [py, "-c", runtime.dependencies.SAGE_ATTENTION_PROBE]
+    assert runtime.dependencies.prepare_sage_attention() is True
     assert calls[1:] == [install, probe]
-    assert runtime.t("setup.sage_enabled") in capsys.readouterr().out
+    assert runtime.messages.t("setup.sage_enabled") in capsys.readouterr().out
     # A restored environment that has it keeps its version, whichever that is.
     calls.clear()
     state["present"] = "True\n"
-    assert runtime.prepare_sage_attention() is True
+    assert runtime.dependencies.prepare_sage_attention() is True
     assert calls[1:] == [probe]
     # It cannot run here (no compiler, an unsupported GPU): setup goes on, ComfyUI starts without it.
     state["probe_fails"] = True
-    assert runtime.prepare_sage_attention() is False
-    assert runtime.t("setup.sage_unavailable") in capsys.readouterr().out
-    compile(runtime.SAGE_ATTENTION_PROBE, "probe", "exec")
+    assert runtime.dependencies.prepare_sage_attention() is False
+    assert runtime.messages.t("setup.sage_unavailable") in capsys.readouterr().out
+    compile(runtime.dependencies.SAGE_ATTENTION_PROBE, "probe", "exec")
 
 
 def test_comfyui_gets_the_one_fast_option_only_where_setup_was_asked_for_it():
-    assert runtime.backend_command({"fp16_accumulation": True})[-2:] == ["--fast", "fp16_accumulation"]
-    assert "--fast" not in runtime.backend_command({"fp16_accumulation": False})
-    assert "--fast" not in runtime.backend_command({"checkpoint_seconds": 120})
+    assert runtime.service.backend_command({"fp16_accumulation": True})[-2:] == ["--fast", "fp16_accumulation"]
+    assert "--fast" not in runtime.service.backend_command({"fp16_accumulation": False})
+    assert "--fast" not in runtime.service.backend_command({"checkpoint_seconds": 120})
     # With both: --fast takes every word after it that is not an option, so nothing may follow its value.
-    assert runtime.backend_command({"sage_attention": True, "fp16_accumulation": True})[-3:] == [
+    assert runtime.service.backend_command({"sage_attention": True, "fp16_accumulation": True})[-3:] == [
         "--use-sage-attention", "--fast", "fp16_accumulation"]
 
 
@@ -707,25 +715,25 @@ def test_notebook_uses_sage_attention_unless_it_is_turned_off_and_fp16_accumulat
 
 
 def as_colab_root(monkeypatch):
-    monkeypatch.setattr(runtime.sys, "platform", "linux")
-    monkeypatch.setattr(runtime.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
 
 
 def test_application_commands_drop_root_and_cannot_regain_it(monkeypatch):
     from types import SimpleNamespace
     captured = {}
     as_colab_root(monkeypatch)
-    monkeypatch.setattr(runtime.subprocess, "run", lambda args, **kw: captured.update(args=args) or SimpleNamespace(
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: captured.update(args=args) or SimpleNamespace(
         returncode=0, stdout="", stderr=""))
-    monkeypatch.setattr(runtime, "bounded", lambda args, **kw: captured.update(args=args, **kw) or (0, b"", b""))
-    runtime.run(["python", "-m", "pip", "install", "-r", "requirements.txt"], app=True, capture=True)
+    monkeypatch.setattr(runtime.commands, "bounded", lambda args, **kw: captured.update(args=args, **kw) or (0, b"", b""))
+    runtime.commands.run(["python", "-m", "pip", "install", "-r", "requirements.txt"], app=True, capture=True)
     assert captured["timeout"] > 0 and captured["limit"] > 0  # Root never waits on it without bound.
     prefix = captured["args"][:captured["args"].index("--") + 1]
     # Looked up while still root, with a PATH whose first directory the application user can write.
     assert prefix[0] == "/usr/bin/setpriv" and "--no-new-privs" in prefix and "--init-groups" in prefix
-    assert prefix[prefix.index("--reuid") + 1] == prefix[prefix.index("--regid") + 1] == runtime.APP_USER != "root"
+    assert prefix[prefix.index("--reuid") + 1] == prefix[prefix.index("--regid") + 1] == runtime.commands.APP_USER != "root"
     assert captured["args"][len(prefix):] == ["python", "-m", "pip", "install", "-r", "requirements.txt"]
-    runtime.run(["apt-get", "update"], capture=True)
+    runtime.commands.run(["apt-get", "update"], capture=True)
     assert captured["args"] == ["apt-get", "update"]
 
 
@@ -733,41 +741,44 @@ def test_root_touches_the_application_tree_only_as_the_application_user(monkeypa
     from types import SimpleNamespace
     calls = []
     as_colab_root(monkeypatch)
-    monkeypatch.setattr(runtime, "BASE", tmp_path / "session")
+    monkeypatch.setattr(runtime.paths, "BASE", tmp_path / "session")
 
     def observed(args, **kwargs):
         calls.append((args, kwargs))
         return 0, b"content", b""
-    monkeypatch.setattr(runtime, "bounded", observed)
+    monkeypatch.setattr(runtime.commands, "bounded", observed)
     monkeypatch.setenv("HF_TOKEN", "secret")
-    assert runtime.app_action("get", "models/vae/model.safetensors") == b"content"
+    assert runtime.app_tree.app_action("get", "models/vae/model.safetensors") == b"content"
     args, kwargs = calls[0]
     assert args[0] == "/usr/bin/setpriv" and "--no-new-privs" in args
-    assert args[args.index("--") + 1:][2:] == ["app", str(tmp_path / "session"), "get", "models/vae/model.safetensors"]
+    assert args[args.index("--") + 1:] == [sys.executable, "-m", "runtime", "app", str(tmp_path / "session"), "get",
+                                           "models/vae/model.safetensors"]
+    # python -m imports from its working directory first: the package's own, never the application's tree.
+    assert kwargs["cwd"] == runtime.commands.OWN_DIRECTORY == ROOT
     assert "HF_TOKEN" not in kwargs["env"] and kwargs["timeout"] > 0 and kwargs["limit"] > 0
-    monkeypatch.setattr(runtime, "bounded", lambda args, **kwargs: (_ for _ in ()).throw(RuntimeError("時間内に終わりませんでした")))
+    monkeypatch.setattr(runtime.commands, "bounded", lambda args, **kwargs: (_ for _ in ()).throw(RuntimeError("時間内に終わりませんでした")))
     with pytest.raises(RuntimeError, match="archive に失敗しました: 時間内"):
-        runtime.app_action("archive")
+        runtime.app_tree.app_action("archive")
 
 
 def test_put_refuses_to_leave_the_application_tree(storage):
-    outside = runtime.PRIVATE / "session.json"
+    outside = runtime.paths.PRIVATE / "session.json"
     for relative in ("../private/session.json", "/etc/ld.so.preload"):
         with pytest.raises(ValueError):
-            runtime.app_action("put", relative, stdin=b"overwritten")
+            runtime.app_tree.app_action("put", relative, stdin=b"overwritten")
     assert not outside.exists()
-    runtime.app_action("put", "models/vae/model.safetensors", 1_700_000_000_000_000_000, stdin=b"weights")
-    saved = runtime.BASE / "models/vae/model.safetensors"
+    runtime.app_tree.app_action("put", "models/vae/model.safetensors", 1_700_000_000_000_000_000, stdin=b"weights")
+    saved = runtime.paths.BASE / "models/vae/model.safetensors"
     assert saved.read_bytes() == b"weights" and int(saved.stat().st_mtime) == 1_700_000_000
-    assert runtime.app_action("get", "models/vae/model.safetensors") == b"weights"
+    assert runtime.app_tree.app_action("get", "models/vae/model.safetensors") == b"weights"
 
 
 def test_venv_failure_displays_stdout_and_stderr(monkeypatch, capsys):
     from types import SimpleNamespace
-    monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **kw: SimpleNamespace(
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(
         returncode=1, stdout="ensurepip is not available", stderr="venv diagnostic"))
     with pytest.raises(RuntimeError, match="終了コード 1"):
-        runtime.run(["python", "-m", "venv", "local-venv"], app=True, capture=True)
+        runtime.commands.run(["python", "-m", "venv", "local-venv"], app=True, capture=True)
     output = capsys.readouterr().out
     assert "ensurepip is not available" in output and "venv diagnostic" in output
 
@@ -777,8 +788,8 @@ def test_existing_ensurepip_needs_no_apt_install(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     def unexpected_install(*args, **kwargs):
         raise AssertionError("APT should not run when ensurepip is available")
-    monkeypatch.setattr(runtime, "run", unexpected_install)
-    runtime.ensure_venv_support()
+    monkeypatch.setattr(runtime.commands, "run", unexpected_install)
+    runtime.dependencies.ensure_venv_support()
 
 
 @pytest.mark.parametrize("minor", [12, 13])
@@ -787,21 +798,21 @@ def test_missing_ensurepip_installs_matching_python_package(monkeypatch, minor):
     from types import SimpleNamespace
     installed = []
     with monkeypatch.context() as scoped:
-        scoped.setattr(runtime.sys, "version_info", SimpleNamespace(major=3, minor=minor))
+        scoped.setattr(sys, "version_info", SimpleNamespace(major=3, minor=minor))
         scoped.setattr(importlib.util, "find_spec", lambda name: object() if installed else None)
-        scoped.setattr(runtime, "run", lambda args: installed.append(args))
-        scoped.setattr(runtime, "installed_apt_packages", lambda: {"git"})
-        scoped.setattr(runtime, "APT_INDEX_REFRESHED", [])
-        runtime.ensure_venv_support()
+        scoped.setattr(runtime.commands, "run", lambda args: installed.append(args))
+        scoped.setattr(runtime.dependencies, "installed_apt_packages", lambda: {"git"})
+        scoped.setattr(runtime.dependencies, "APT_INDEX_REFRESHED", [])
+        runtime.dependencies.ensure_venv_support()
     assert installed == [["apt-get", "update", "-qq"], ["apt-get", "install", "-y", "-qq", f"python3.{minor}-venv"]]
 
 
 def test_ensurepip_still_missing_after_install_stops_setup(monkeypatch):
     import importlib.util
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-    monkeypatch.setattr(runtime, "run", lambda args: None)
+    monkeypatch.setattr(runtime.commands, "run", lambda args: None)
     with pytest.raises(RuntimeError, match="インストール後も"):
-        runtime.ensure_venv_support()
+        runtime.dependencies.ensure_venv_support()
 
 
 def test_venv_package_install_failure_has_actionable_error(monkeypatch):
@@ -809,9 +820,9 @@ def test_venv_package_install_failure_has_actionable_error(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     def failed_install(args):
         raise RuntimeError("APT failed")
-    monkeypatch.setattr(runtime, "run", failed_install)
+    monkeypatch.setattr(runtime.commands, "run", failed_install)
     with pytest.raises(RuntimeError, match="apt-cache policy"):
-        runtime.ensure_venv_support()
+        runtime.dependencies.ensure_venv_support()
 
 
 def test_uncaptured_pip_failure_keeps_full_diagnostics(monkeypatch, capsys):
@@ -820,28 +831,28 @@ def test_uncaptured_pip_failure_keeps_full_diagnostics(monkeypatch, capsys):
         assert kwargs["capture_output"] is True
         return SimpleNamespace(returncode=1, stdout="FIRST DIAGNOSTIC\n" + "x" * 5000,
                                stderr="ERROR: incompatible Python version")
-    monkeypatch.setattr(runtime.subprocess, "run", failed_run)
+    monkeypatch.setattr(subprocess, "run", failed_run)
     with pytest.raises(RuntimeError, match="python -m pip install"):
-        runtime.run(["python", "-m", "pip", "install", "-r", "requirements.txt"], app=True)
+        runtime.commands.run(["python", "-m", "pip", "install", "-r", "requirements.txt"], app=True)
     output = capsys.readouterr().out
     assert "FIRST DIAGNOSTIC" in output and "ERROR: incompatible Python version" in output
 
 
 def test_root_command_failure_also_displays_diagnostics(monkeypatch, capsys):
     from types import SimpleNamespace
-    monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **kw: SimpleNamespace(
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(
         returncode=1, stdout="APT explanation", stderr="package not found"))
     with pytest.raises(RuntimeError, match="apt-get が終了コード 1"):
-        runtime.run(["apt-get", "install", "python3.13-venv"], capture=True)
+        runtime.commands.run(["apt-get", "install", "python3.13-venv"], capture=True)
     output = capsys.readouterr().out
     assert "APT explanation" in output and "package not found" in output
 
 
 def test_successful_captured_command_returns_output_without_printing(monkeypatch, capsys):
     from types import SimpleNamespace
-    monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **kw: SimpleNamespace(
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(
         returncode=0, stdout="package==1.0\n", stderr=""))
-    assert runtime.run(["python", "-m", "pip", "freeze"], app=True, capture=True) == "package==1.0\n"
+    assert runtime.commands.run(["python", "-m", "pip", "freeze"], app=True, capture=True) == "package==1.0\n"
     assert capsys.readouterr().out == ""
 
 
@@ -850,26 +861,26 @@ def test_supervisor_preserves_driver_settings_without_notebook_credentials(tmp_p
     captured = {}
     class SpawnObserved(Exception):
         pass
-    monkeypatch.setattr(runtime, "PRIVATE", tmp_path)
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path)
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib64-nvidia")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     monkeypatch.setenv("HF_TOKEN", "secret")
     monkeypatch.setenv("TBE_EPHEM_CREDS_ADDR", "secret-service")
-    monkeypatch.setattr(runtime.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
     def observed_spawn(args, **kwargs):
         captured.update(kwargs, args=args)
         raise SpawnObserved()
-    monkeypatch.setattr(runtime.subprocess, "Popen", observed_spawn)
+    monkeypatch.setattr(subprocess, "Popen", observed_spawn)
     with pytest.raises(SpawnObserved):
-        runtime.supervise({"checkpoint_seconds": 120})
+        runtime.service.supervise({"checkpoint_seconds": 120})
     assert captured["env"]["LD_LIBRARY_PATH"] == "/usr/lib64-nvidia"
     assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "0"
-    assert captured["env"]["VIRTUAL_ENV"] == str(runtime.BASE / ".venv")
+    assert captured["env"]["VIRTUAL_ENV"] == str(runtime.paths.BASE / ".venv")
     assert "HF_TOKEN" not in captured["env"] and "TBE_EPHEM_CREDS_ADDR" not in captured["env"]
     as_colab_root(monkeypatch)
     with pytest.raises(SpawnObserved):
-        runtime.supervise({"checkpoint_seconds": 120, "sage_attention": True})
-    command = runtime.backend_command({"sage_attention": True})
+        runtime.service.supervise({"checkpoint_seconds": 120, "sage_attention": True})
+    command = runtime.service.backend_command({"sage_attention": True})
     assert captured["args"][0] == "/usr/bin/setpriv" and captured["args"][-len(command):] == command
 
 
@@ -877,7 +888,7 @@ def test_application_library_path_never_includes_the_current_directory(monkeypat
     # The loader reads an empty or relative entry as the current directory, which root
     # enters (the application's own tree) before it starts the privilege-dropping program.
     monkeypatch.setenv("LD_LIBRARY_PATH", ":/usr/lib64-nvidia::relative/lib:.:/usr/local/cuda/lib64:")
-    assert runtime.application_environment()["LD_LIBRARY_PATH"] == "/usr/lib64-nvidia:/usr/local/cuda/lib64"
+    assert runtime.commands.application_environment()["LD_LIBRARY_PATH"] == "/usr/lib64-nvidia:/usr/local/cuda/lib64"
 
 
 def test_apt_runs_only_for_missing_packages_and_refreshes_the_index_once(monkeypatch):
@@ -888,30 +899,30 @@ def test_apt_runs_only_for_missing_packages_and_refreshes_the_index_once(monkeyp
                "ii \tffmpeg\t\n"
                "ii \tlibglib2.0-0t64\tlibglib2.0-0 (= 2.80.0-6ubuntu3.4), libglib2.0-0-abi\n"
                "rc \tlibgl1\t\n")
-    monkeypatch.setattr(runtime.subprocess, "run", lambda args, **kw: SimpleNamespace(stdout=listing))
-    monkeypatch.setattr(runtime, "run", lambda args: calls.append(args))
-    monkeypatch.setattr(runtime, "APT_INDEX_REFRESHED", [])
-    assert runtime.installed_apt_packages() == {"git", "ffmpeg", "libglib2.0-0t64", "libglib2.0-0", "libglib2.0-0-abi"}
-    runtime.apt_install(["git", "ffmpeg", "libglib2.0-0"])
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: SimpleNamespace(stdout=listing))
+    monkeypatch.setattr(runtime.commands, "run", lambda args: calls.append(args))
+    monkeypatch.setattr(runtime.dependencies, "APT_INDEX_REFRESHED", [])
+    assert runtime.dependencies.installed_apt_packages() == {"git", "ffmpeg", "libglib2.0-0t64", "libglib2.0-0", "libglib2.0-0-abi"}
+    runtime.dependencies.apt_install(["git", "ffmpeg", "libglib2.0-0"])
     assert calls == []  # Nothing missing: not even the index refresh.
-    runtime.apt_install(["git", "libgl1"])
-    runtime.apt_install(["aria2"])
+    runtime.dependencies.apt_install(["git", "libgl1"])
+    runtime.dependencies.apt_install(["aria2"])
     assert calls == [["apt-get", "update", "-qq"], ["apt-get", "install", "-y", "-qq", "libgl1"],
                      ["apt-get", "install", "-y", "-qq", "aria2"]]
 
 
 def test_application_pip_ignores_the_global_configuration():
     # Colab's pip.conf logs to a root-only file; unprivileged pip would fail on every record.
-    assert runtime.application_environment()["PIP_CONFIG_FILE"] == "/dev/null"
+    assert runtime.commands.application_environment()["PIP_CONFIG_FILE"] == "/dev/null"
 
 
 def test_environment_installs_go_through_uv_with_pip_compatible_index_lookup(monkeypatch, capsys):
     from types import SimpleNamespace
     calls = []
-    monkeypatch.setattr(runtime.subprocess, "run", lambda args, **kw: calls.append(args) or SimpleNamespace(
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: calls.append(args) or SimpleNamespace(
         returncode=0, stdout="", stderr=""))
-    py = str(runtime.BASE / ".venv/bin/python")
-    runtime.install_packages("--index-strategy", "unsafe-best-match", "--extra-index-url",
+    py = str(runtime.paths.BASE / ".venv/bin/python")
+    runtime.dependencies.install_packages("--index-strategy", "unsafe-best-match", "--extra-index-url",
                              "https://download.pytorch.org/whl/cu130", "-r", "requirements.lock.txt")
     assert calls == [[py, "-m", "uv", "pip", "install", "--python", py, "--index-strategy", "unsafe-best-match",
                       "--extra-index-url", "https://download.pytorch.org/whl/cu130", "-r", "requirements.lock.txt"]]
@@ -929,7 +940,7 @@ def test_environment_installs_go_through_uv_with_pip_compatible_index_lookup(mon
      "https://civitai.com/api/download/models/67890", ""),
 ])
 def test_model_links_pasted_from_a_browser(pasted, download, name):
-    assert runtime.parse_model_url(pasted) == (download, name)
+    assert runtime.downloads.parse_model_url(pasted) == (download, name)
 
 
 @pytest.mark.parametrize("pasted", [
@@ -940,44 +951,44 @@ def test_model_links_pasted_from_a_browser(pasted, download, name):
     "https://example.com/model.safetensors", ""])
 def test_unusable_model_links_are_explained_not_downloaded(pasted):
     with pytest.raises(ValueError):
-        runtime.parse_model_url(pasted)
+        runtime.downloads.parse_model_url(pasted)
 
 
 def test_token_secret_follows_the_site_of_the_link():
-    assert runtime.model_token_name("https://civitai.com/models/1?modelVersionId=2") == "CIVITAI_TOKEN"
-    assert runtime.model_token_name("https://huggingface.co/a/b/blob/main/c.safetensors") == "HF_TOKEN"
+    assert runtime.downloads.model_token_name("https://civitai.com/models/1?modelVersionId=2") == "CIVITAI_TOKEN"
+    assert runtime.downloads.model_token_name("https://huggingface.co/a/b/blob/main/c.safetensors") == "HF_TOKEN"
 
 
 def test_pasted_link_downloads_into_the_chosen_folder(storage, monkeypatch):
     fake_requests(monkeypatch, [{"data": b"hf model"}])
-    runtime.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/split/model.safetensors", "vae")
-    assert (runtime.drive_root(storage) / "models/vae/model.safetensors").read_bytes() == b"hf model"
-    assert (runtime.BASE / "models/vae/model.safetensors").read_bytes() == b"hf model"
+    runtime.downloads.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/split/model.safetensors", "vae")
+    assert (runtime.drive.drive_root(storage) / "models/vae/model.safetensors").read_bytes() == b"hf model"
+    assert (runtime.paths.BASE / "models/vae/model.safetensors").read_bytes() == b"hf model"
     session, _ = fake_requests(monkeypatch, [{"data": b"renamed"}])
-    runtime.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/split/model.safetensors", " loras/ ", "mine.safetensors")
-    assert (runtime.drive_root(storage) / "models/loras/mine.safetensors").read_bytes() == b"renamed"
+    runtime.downloads.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/split/model.safetensors", " loras/ ", "mine.safetensors")
+    assert (runtime.drive.drive_root(storage) / "models/loras/mine.safetensors").read_bytes() == b"renamed"
     with pytest.raises(ValueError):
-        runtime.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/model.safetensors", "../outside")
+        runtime.downloads.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/model.safetensors", "../outside")
     with pytest.raises(ValueError):
-        runtime.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/model.safetensors", "vae", "sub/name.safetensors")
+        runtime.downloads.fetch_model(storage, "https://huggingface.co/author/repo/blob/main/model.safetensors", "vae", "sub/name.safetensors")
 
 
 def test_civitai_download_takes_the_served_file_name_but_never_a_path(storage, monkeypatch):
-    models = runtime.drive_root(storage) / "models"
+    models = runtime.drive.drive_root(storage) / "models"
     served = {"Content-Type": "application/octet-stream",
               "Content-Disposition": 'attachment; filename="styleLora_v2.safetensors"'}
     fake_requests(monkeypatch, [{"status": 307, "headers": {"Location": "https://cdn.example/signed?key=secret"}},
                                 {"headers": served, "data": b"lora"}])
-    runtime.fetch_model(storage, "https://civitai.com/models/1/name?modelVersionId=22", "loras")
+    runtime.downloads.fetch_model(storage, "https://civitai.com/models/1/name?modelVersionId=22", "loras")
     assert (models / "loras/styleLora_v2.safetensors").read_bytes() == b"lora"
     fake_requests(monkeypatch, [{"headers": served, "data": b"again"}])
     with pytest.raises(FileExistsError):
-        runtime.fetch_model(storage, "https://civitai.com/api/download/models/22", "loras")
+        runtime.downloads.fetch_model(storage, "https://civitai.com/api/download/models/22", "loras")
     assert (models / "loras/styleLora_v2.safetensors").read_bytes() == b"lora"
     for header in ('attachment; filename="../../environment/latest.json"', "attachment", 'attachment; filename=".hidden"'):
         fake_requests(monkeypatch, [{"headers": {"Content-Disposition": header}, "data": b"x"}])
         try:
-            runtime.fetch_model(storage, "https://civitai.com/api/download/models/33", "loras")
+            runtime.downloads.fetch_model(storage, "https://civitai.com/api/download/models/33", "loras")
         except RuntimeError as failure:
             assert "ファイル名を取得できません" in str(failure)
     assert sorted(p.name for p in models.rglob("*") if p.is_file()) == ["latest.json", "styleLora_v2.safetensors"]
@@ -986,25 +997,25 @@ def test_civitai_download_takes_the_served_file_name_but_never_a_path(storage, m
 
 
 def test_empty_placeholder_files_are_not_treated_as_models(storage):
-    models = runtime.drive_root(storage) / "models"
+    models = runtime.drive.drive_root(storage) / "models"
     (models / "checkpoints").mkdir()
     (models / "checkpoints/put_checkpoints_here").write_bytes(b"")
-    (runtime.BASE / "models/vae").mkdir(parents=True)
-    (runtime.BASE / "models/vae/put_vae_here").write_bytes(b"")
-    assert runtime.sync_models(storage) == 0
-    runtime.save_new_cache_models(storage, force=True)
-    assert not (models / "vae/put_vae_here").exists() and not (runtime.BASE / "models/checkpoints/put_checkpoints_here").exists()
+    (runtime.paths.BASE / "models/vae").mkdir(parents=True)
+    (runtime.paths.BASE / "models/vae/put_vae_here").write_bytes(b"")
+    assert runtime.drive.sync_models(storage) == 0
+    runtime.drive.save_new_cache_models(storage, force=True)
+    assert not (models / "vae/put_vae_here").exists() and not (runtime.paths.BASE / "models/checkpoints/put_checkpoints_here").exists()
 
 
 def test_virtual_environment_needs_nothing_from_apt(monkeypatch):
     calls = []
-    monkeypatch.setattr(runtime, "run", lambda args, **kw: calls.append(list(map(str, args))))
-    monkeypatch.setattr(runtime, "apt_install", lambda packages: calls.append(["apt", *packages]))
-    py = str(runtime.BASE / ".venv/bin/python")
-    assert str(runtime.create_venv()) == py
+    monkeypatch.setattr(runtime.commands, "run", lambda args, **kw: calls.append(list(map(str, args))))
+    monkeypatch.setattr(runtime.dependencies, "apt_install", lambda packages: calls.append(["apt", *packages]))
+    py = str(runtime.paths.BASE / ".venv/bin/python")
+    assert str(runtime.dependencies.create_venv()) == py
     # The notebook's pip installs pip and uv into the new environment; apt would replace
     # the interpreter the running kernel was started from.
-    assert calls == [[sys.executable, "-m", "venv", "--without-pip", str(runtime.BASE / ".venv")],
+    assert calls == [[sys.executable, "-m", "venv", "--without-pip", str(runtime.paths.BASE / ".venv")],
                      [sys.executable, "-m", "pip", "--python", py, "install", "pip", "uv"]]
 
 
@@ -1109,7 +1120,7 @@ class FakeEnvironment:
         return b""
 
     def checkpoint(self, config, force=False):
-        runtime.refuse_unfinished_update()
+        runtime.environment.refuse_unfinished_update()
         self.saves += 1
 
 
@@ -1117,29 +1128,29 @@ class FakeEnvironment:
 def updatable(storage, monkeypatch):
     def environment(fail=()):
         fake = FakeEnvironment(fail)
-        monkeypatch.setattr(runtime, "run", fake.run)
-        monkeypatch.setattr(runtime, "app_action", fake.app_action)
-        monkeypatch.setattr(runtime, "checkpoint", fake.checkpoint)
+        monkeypatch.setattr(runtime.commands, "run", fake.run)
+        monkeypatch.setattr(runtime.app_tree, "app_action", fake.app_action)
+        monkeypatch.setattr(runtime.environment, "checkpoint", fake.checkpoint)
         return fake
-    (runtime.BASE / "environment/ComfyUI").mkdir(parents=True)
-    (runtime.BASE / "environment/ComfyUI/requirements.txt").write_text("")
+    (runtime.paths.BASE / "environment/ComfyUI").mkdir(parents=True)
+    (runtime.paths.BASE / "environment/ComfyUI/requirements.txt").write_text("")
     return storage, environment
 
 
 def test_update_moves_comfyui_to_the_requested_version_and_saves_it(updatable, capsys):
     config, environment = updatable
     fake = environment()
-    assert runtime.update_comfyui(config, "v0.39.2") is True
+    assert runtime.installation.update_comfyui(config, "v0.39.2") is True
     assert fake.head == fake.NEW and fake.saves == 1
     assert fake.calls == ["git fetch", "git rev-parse", "git describe", "git rev-parse", "git checkout", "prepare",
                           "install requirements", "pip check", "git describe"]
     # What was installed before is on record before anything changes, for the way back.
     assert fake.files["environment/requirements.lock.txt"] == fake.BASE_PACKAGES
-    assert not (runtime.PRIVATE / "update-incomplete.json").exists()
-    assert runtime.t("update.done", previous="v0.39.0", version="v0.39.2") in capsys.readouterr().out
+    assert not (runtime.paths.PRIVATE / "update-incomplete.json").exists()
+    assert runtime.messages.t("update.done", previous="v0.39.0", version="v0.39.2") in capsys.readouterr().out
     fake.calls.clear()
-    assert runtime.update_comfyui(config, "v0.39.2") is False  # Nothing to do, nothing touched.
-    assert fake.saves == 1 and "git checkout" not in fake.calls and runtime.t("update.already", version="v0.39.2") in capsys.readouterr().out
+    assert runtime.installation.update_comfyui(config, "v0.39.2") is False  # Nothing to do, nothing touched.
+    assert fake.saves == 1 and "git checkout" not in fake.calls and runtime.messages.t("update.already", version="v0.39.2") in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("ref,error", [("--upload-pack=x", "refが不正"), ("a b", "refが不正"),
@@ -1148,20 +1159,20 @@ def test_update_refuses_a_version_that_does_not_exist(updatable, ref, error):
     config, environment = updatable
     fake = environment()
     with pytest.raises(ValueError, match=error):
-        runtime.update_comfyui(config, ref)
+        runtime.installation.update_comfyui(config, ref)
     assert fake.head == fake.OLD and fake.saves == 0 and "git checkout" not in fake.calls
 
 
 def test_update_needs_comfyui_stopped_and_drive_connected(updatable, monkeypatch):
     config, environment = updatable
     fake = environment()
-    (runtime.PRIVATE / "processes.json").write_text("{}")
+    (runtime.paths.PRIVATE / "processes.json").write_text("{}")
     with pytest.raises(RuntimeError, match="ComfyUIが起動中です"):
-        runtime.update_comfyui(config, "v0.39.2")
-    (runtime.PRIVATE / "processes.json").unlink()
-    monkeypatch.setattr(runtime, "DRIVE_MOUNT", runtime.PRIVATE / "unmounted")
-    with pytest.raises(RuntimeError, match=re.escape(runtime.t("drive.not_mounted"))):
-        runtime.update_comfyui(config, "v0.39.2")
+        runtime.installation.update_comfyui(config, "v0.39.2")
+    (runtime.paths.PRIVATE / "processes.json").unlink()
+    monkeypatch.setattr(runtime.paths, "DRIVE_MOUNT", runtime.paths.PRIVATE / "unmounted")
+    with pytest.raises(RuntimeError, match=re.escape(runtime.messages.t("drive.not_mounted"))):
+        runtime.installation.update_comfyui(config, "v0.39.2")
     assert fake.calls == []
 
 
@@ -1170,16 +1181,16 @@ def test_failed_update_is_undone_and_never_reaches_drive(updatable, capsys, fail
     config, environment = updatable
     fake = environment(fail={failure})
     with pytest.raises(RuntimeError, match="network unreachable|numpy<2"):
-        runtime.update_comfyui(config, "v0.39.2")
+        runtime.installation.update_comfyui(config, "v0.39.2")
     assert fake.head == fake.OLD and fake.saves == 0
     undo = fake.calls[len(fake.calls) - fake.calls[::-1].index("git checkout") - 1:]
     assert undo[:3] == ["git checkout", "prepare", "install lock"]
     # Packages only the new version brought are removed again.
     assert undo[3:] == (["uninstall new-dependency"] if failure == "check" else [])
     assert fake.packages == fake.BASE_PACKAGES
-    assert not (runtime.PRIVATE / "update-incomplete.json").exists()
+    assert not (runtime.paths.PRIVATE / "update-incomplete.json").exists()
     assert "元のバージョン（v0.39.0）へ戻しました" in capsys.readouterr().out
-    runtime.checkpoint(config, force=True)  # Saving works again.
+    runtime.environment.checkpoint(config, force=True)  # Saving works again.
     assert fake.saves == 1
 
 
@@ -1189,20 +1200,20 @@ def test_update_that_cannot_be_undone_blocks_saving_and_starting_until_it_is(upd
     config, environment = updatable
     fake = environment(fail={"check", "undo"})
     with pytest.raises(RuntimeError, match="network unreachable"):
-        runtime.update_comfyui(config, "v0.39.2")
-    assert (runtime.PRIVATE / "update-incomplete.json").exists() and fake.saves == 0
+        runtime.installation.update_comfyui(config, "v0.39.2")
+    assert (runtime.paths.PRIVATE / "update-incomplete.json").exists() and fake.saves == 0
     assert "元のバージョンへも戻せませんでした" in capsys.readouterr().out
     with pytest.raises(RuntimeError, match="更新が途中で止まっています"):
-        runtime.checkpoint(config, force=True)
+        runtime.environment.checkpoint(config, force=True)
     with pytest.raises(RuntimeError, match="更新が途中で止まっています"):
-        runtime.start(dict(config), "tunnel")
-    assert not (runtime.PRIVATE / "processes.json").exists()
+        runtime.service.start(dict(config), "tunnel")
+    assert not (runtime.paths.PRIVATE / "processes.json").exists()
     # Running the update again first finishes undoing the broken one, then updates.
     fake.fail.clear()
     fake.calls.clear()
-    assert runtime.update_comfyui(config, "v0.39.2") is True
+    assert runtime.installation.update_comfyui(config, "v0.39.2") is True
     assert fake.calls[:4] == ["git checkout", "prepare", "install lock", "uninstall new-dependency"]
-    assert fake.head == fake.NEW and fake.saves == 1 and not (runtime.PRIVATE / "update-incomplete.json").exists()
+    assert fake.head == fake.NEW and fake.saves == 1 and not (runtime.paths.PRIVATE / "update-incomplete.json").exists()
     assert "途中で止まった更新を元に戻します" in capsys.readouterr().out
 
 
@@ -1213,9 +1224,9 @@ def signed_in(client, server):
 
 @pytest.fixture
 def private(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime, "PRIVATE", tmp_path / "private")
-    runtime.PRIVATE.mkdir()
-    return runtime.PRIVATE
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path / "private")
+    runtime.paths.PRIVATE.mkdir()
+    return runtime.paths.PRIVATE
 
 
 def test_proxy_auth_http_range_upload_and_websocket(private):
@@ -1247,7 +1258,7 @@ def test_proxy_auth_http_range_upload_and_websocket(private):
         app.router.add_route("*", "/{path:.*}", backend)
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
                     for route in ("/", "/api/view?filename=video.mp4", "/ws", "/object_info"):
@@ -1259,8 +1270,8 @@ def test_proxy_auth_http_range_upload_and_websocket(private):
                     async with client.get(server.make_url("/?access_key=test-cookie-secret")) as res:
                         assert res.status == 401
                     assert not seen  # Nothing unauthenticated reaches ComfyUI.
-                    code = runtime.new_pairing_code()
-                    async with client.post(server.make_url(runtime.PAIRING_PATH), data={"code": code}, allow_redirects=False) as res:
+                    code = runtime.pairing.new_pairing_code()
+                    async with client.post(server.make_url(runtime.pairing.PAIRING_PATH), data={"code": code}, allow_redirects=False) as res:
                         assert res.status == 303 and res.headers["Location"] == "/"
                         assert res.cookies["comfy_colab"]["httponly"]
                         assert res.cookies["comfy_colab"]["samesite"] == "Lax"
@@ -1285,7 +1296,7 @@ def test_proxy_auth_http_range_upload_and_websocket(private):
                     async with client.get(server.make_url("/api/view?filename=image.png")) as res:
                         assert res.status == 200
                     # Signed in, the pairing page has nothing more to offer.
-                    async with client.get(server.make_url(runtime.PAIRING_PATH), allow_redirects=False) as res:
+                    async with client.get(server.make_url(runtime.pairing.PAIRING_PATH), allow_redirects=False) as res:
                         assert res.status == 303 and res.headers["Location"] == "/"
                 assert seen and all("comfy_colab" not in cookies for cookies in seen)
                 async with ClientSession() as unauthenticated:
@@ -1308,7 +1319,7 @@ def test_pairing_code_lets_one_browser_in_once_and_runs_out(private, monkeypatch
         app = web.Application()
         app.router.add_route("*", "/{path:.*}", backend)
         browser = {"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
-        pair = runtime.PAIRING_PATH
+        pair = runtime.pairing.PAIRING_PATH
 
         def fresh():
             return ClientSession(cookie_jar=CookieJar(unsafe=True))
@@ -1319,9 +1330,9 @@ def test_pairing_code_lets_one_browser_in_once_and_runs_out(private, monkeypatch
 
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
-                code = runtime.new_pairing_code()
+                code = runtime.pairing.new_pairing_code()
                 assert re.fullmatch(r"\d{8}", code)
                 async with fresh() as first, fresh() as second:
                     # Opening the address in a browser leads to the page that asks for the code.
@@ -1341,7 +1352,7 @@ def test_pairing_code_lets_one_browser_in_once_and_runs_out(private, monkeypatch
                     assert (await enter(first, code, headers={"Origin": "null"}))[0] == 403
                     # A wrong code is counted and says how many tries are left.
                     status, page = await enter(first, "00000000" if code != "00000000" else "11111111")
-                    assert status == 401 and f"あと{runtime.PAIRING_ATTEMPTS - 1}回" in page
+                    assert status == 401 and f"あと{runtime.pairing.PAIRING_ATTEMPTS - 1}回" in page
                     # Another site cannot submit a code through this browser; too large a body is not read.
                     assert (await enter(first, code, headers={"Origin": "https://evil.example"}))[0] == 403
                     async with first.post(server.make_url(pair), data=b"code=" + b"1" * 400) as res:
@@ -1357,20 +1368,20 @@ def test_pairing_code_lets_one_browser_in_once_and_runs_out(private, monkeypatch
                     async with second.get(server.make_url("/api/prompt")) as res:
                         assert res.status == 401
                     # A new code replaces it; wrong guesses use it up.
-                    code = runtime.new_pairing_code()
-                    for left in range(runtime.PAIRING_ATTEMPTS - 1, 0, -1):
+                    code = runtime.pairing.new_pairing_code()
+                    for left in range(runtime.pairing.PAIRING_ATTEMPTS - 1, 0, -1):
                         status, page = await enter(second, "x")
                         assert status == 401 and f"あと{left}回" in page
                     assert "このコードは使えません" in (await enter(second, "x"))[1]
                     assert "このコードは使えません" in (await enter(second, code))[1]
                     assert not (private / "pairing.json").exists()
                     # A code that was not used in time is gone too.
-                    code = runtime.new_pairing_code()
-                    clock = runtime.time.time
-                    monkeypatch.setattr(runtime.time, "time", lambda: clock() + runtime.PAIRING_SECONDS + 1)
+                    code = runtime.pairing.new_pairing_code()
+                    clock = time.time
+                    monkeypatch.setattr(time, "time", lambda: clock() + runtime.pairing.PAIRING_SECONDS + 1)
                     assert "このコードは使えません" in (await enter(second, code))[1]
-                    monkeypatch.setattr(runtime.time, "time", clock)
-                    assert (await enter(second, runtime.new_pairing_code()))[0] == 303
+                    monkeypatch.setattr(time, "time", clock)
+                    assert (await enter(second, runtime.pairing.new_pairing_code()))[0] == 303
         assert reached == ["/"]  # Only the paired browser's page load got through.
     asyncio.run(scenario())
     assert "別のサイトからの要求を拒否しました" not in capsys.readouterr().out  # Strangers cannot fill the log.
@@ -1382,12 +1393,12 @@ def test_proxy_without_a_session_secret_lets_nobody_in(private):
 
     async def scenario():
         # Stopped, or a settings file from before a start: there is no cookie value that works.
-        async with TestServer(runtime.create_proxy({}, secure_cookie=False)) as server:
+        async with TestServer(runtime.proxy.create_proxy({}, secure_cookie=False)) as server:
             async with ClientSession() as client:
                 for cookie in ("", "comfy_colab="):
                     async with client.get(server.make_url("/api/prompt"), headers={"Cookie": cookie} if cookie else {}) as res:
                         assert res.status == 401
-                async with client.post(server.make_url(runtime.PAIRING_PATH), data={"code": ""}) as res:
+                async with client.post(server.make_url(runtime.pairing.PAIRING_PATH), data={"code": ""}) as res:
                     assert res.status == 401
     asyncio.run(scenario())
 
@@ -1398,14 +1409,14 @@ def test_production_cookie_security(private):
 
     async def scenario():
         config = {"mode": "tunnel", "cookie_secret": "secret"}
-        async with TestServer(runtime.create_proxy(config)) as server:
+        async with TestServer(runtime.proxy.create_proxy(config)) as server:
             async with ClientSession() as client:
-                data = {"code": runtime.new_pairing_code()}
-                async with client.post(server.make_url(runtime.PAIRING_PATH), data=data, allow_redirects=False) as res:
-                    cookie = res.cookies[runtime.COOKIE]
+                data = {"code": runtime.pairing.new_pairing_code()}
+                async with client.post(server.make_url(runtime.pairing.PAIRING_PATH), data=data, allow_redirects=False) as res:
+                    cookie = res.cookies[runtime.proxy.COOKIE]
                     assert res.status == 303 and cookie["secure"] and cookie["httponly"]
                     assert cookie["path"] == "/" and not cookie["domain"]
-                    assert cookie.value == "secret" and int(cookie["max-age"]) == runtime.COOKIE_SECONDS
+                    assert cookie.value == "secret" and int(cookie["max-age"]) == runtime.proxy.COOKIE_SECONDS
     asyncio.run(scenario())
 
 
@@ -1430,7 +1441,7 @@ def test_proxy_behind_colab_forwarding_needs_no_code_but_keeps_other_sites_out(c
         forwarded = "https://8189-gpu-t4-s-abc123-b.asia-east1-0.prod.colab.dev"
         async with TestServer(app) as upstream:
             config = {"mode": "colab", "origins": [forwarded]}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"))
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"))
             async with TestServer(proxy) as server:
                 async with ClientSession() as client:
                     # Colab only forwards the owner's browser, so there is no code and no cookie.
@@ -1445,7 +1456,7 @@ def test_proxy_behind_colab_forwarding_needs_no_code_but_keeps_other_sites_out(c
                     for origin in ("https://evil.example", "https://8189-gpu-t4-s-other-b.asia-east1-0.prod.colab.dev"):
                         async with client.post(server.make_url("/prompt"), headers={"Origin": origin}) as res:
                             assert res.status == 403
-                    async with client.get(server.make_url(runtime.PAIRING_PATH), allow_redirects=False) as res:
+                    async with client.get(server.make_url(runtime.pairing.PAIRING_PATH), allow_redirects=False) as res:
                         assert res.status == 303 and res.headers["Location"] == "/"
         assert [entry[:2] for entry in seen] == [("GET", "/"), ("POST", "/prompt")]
         # Host follows the origin the browser used, whatever the forwarder put there.
@@ -1491,26 +1502,26 @@ class StartedProcesses:
                 return public(url)
             return SimpleNamespace(ok=True, status_code=proxy_answer if ":8189" in url else 200)
 
-        monkeypatch.setattr(runtime, "PRIVATE", tmp_path)
-        monkeypatch.setattr(runtime, "CONFIG", tmp_path / "session.json")
-        monkeypatch.setattr(runtime.subprocess, "Popen", Process)
+        monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path)
+        monkeypatch.setattr(runtime.paths, "CONFIG", tmp_path / "session.json")
+        monkeypatch.setattr(subprocess, "Popen", Process)
         # The watch for the stop button is a thread of the notebook; here it is only noted.
         self.followed = []
-        monkeypatch.setattr(runtime, "follow_stop_requests", self.followed.append)
-        monkeypatch.setattr(runtime.os, "killpg", lambda pid, sig: None, raising=False)
+        monkeypatch.setattr(runtime.stop_button, "follow_stop_requests", self.followed.append)
+        monkeypatch.setattr(os, "killpg", lambda pid, sig: None, raising=False)
         monkeypatch.setitem(sys.modules, "requests", SimpleNamespace(get=get, RequestException=OSError))
 
 
 def test_tunnel_start_shows_a_pairing_code_instead_of_a_key_and_stop_revokes_everything(tmp_path, monkeypatch, capsys):
     started = StartedProcesses(tmp_path, monkeypatch, proxy_answer=401)
     config = {"drive_folder": "ComfyUI-Colab", "cookie_secret": "leaked-cookie", "mode": "colab", "origins": ["https://old"]}
-    runtime.start(config, "tunnel")
+    runtime.service.start(config, "tunnel")
     output = capsys.readouterr().out
     saved = json.loads((tmp_path / "session.json").read_text())
     assert saved["mode"] == "tunnel" and saved["cookie_secret"] not in ("", "leaked-cookie") and "origins" not in saved
     pairing = json.loads((tmp_path / "pairing.json").read_text())
     code = pairing["code"]
-    assert pairing["attempts"] == runtime.PAIRING_ATTEMPTS
+    assert pairing["attempts"] == runtime.pairing.PAIRING_ATTEMPTS
     # The address carries no secret, and the secret that signs browsers in is never shown.
     assert "https://quick-test-tunnel.trycloudflare.com/\n" in output and "access_key" not in output
     assert f"ペアリングコード: {code[:4]}-{code[4:]}（10分間・1回だけ有効）" in output
@@ -1523,13 +1534,13 @@ def test_tunnel_start_shows_a_pairing_code_instead_of_a_key_and_stop_revokes_eve
     assert started.spawned[-1][started.spawned[-1].index("--protocol") + 1] == "http2"
     assert set(json.loads((tmp_path / "processes.json").read_text())) == {"supervisor", "proxy", "tunnel"}
     with pytest.raises(RuntimeError, match="既に起動済みです"):
-        runtime.start(config, "colab")  # One way at a time.
+        runtime.service.start(config, "colab")  # One way at a time.
     # Another device: a new code, which replaces the first.
-    runtime.issue_pairing_code(config)
+    runtime.pairing.issue_pairing_code(config)
     renewed = json.loads((tmp_path / "pairing.json").read_text())["code"]
     assert f"{renewed[:4]}-{renewed[4:]}" in capsys.readouterr().out
-    monkeypatch.setattr(runtime.Path, "exists", lambda self: self.name == "processes.json")  # No /proc here.
-    runtime.stop(config, save=False)
+    monkeypatch.setattr(Path, "exists", lambda self: self.name == "processes.json")  # No /proc here.
+    runtime.service.stop(config, save=False)
     monkeypatch.undo()
     assert json.loads((tmp_path / "session.json").read_text()) == {"drive_folder": "ComfyUI-Colab"}
     assert not (tmp_path / "pairing.json").exists()
@@ -1543,7 +1554,7 @@ def test_colab_start_opens_no_tunnel_and_admits_only_the_forwarded_address(tmp_p
     monkeypatch.setitem(sys.modules, "google.colab", SimpleNamespace(output=SimpleNamespace(
         eval_js=lambda script: asked.append(script) or address + "/")))
     config = {"drive_folder": "ComfyUI-Colab"}
-    runtime.start(config, "colab")
+    runtime.service.start(config, "colab")
     output = capsys.readouterr().out
     assert asked == ["google.colab.kernel.proxyPort(8189)"]
     saved = json.loads((tmp_path / "session.json").read_text())
@@ -1552,9 +1563,9 @@ def test_colab_start_opens_no_tunnel_and_admits_only_the_forwarded_address(tmp_p
     assert set(json.loads((tmp_path / "processes.json").read_text())) == {"supervisor", "proxy"}
     assert address + "/\n" in output and "ペアリングコード" not in output and not (tmp_path / "pairing.json").exists()
     with pytest.raises(RuntimeError, match="6-2で起動してから"):
-        runtime.issue_pairing_code(saved)
-    monkeypatch.setattr(runtime.Path, "exists", lambda self: self.name == "processes.json")
-    runtime.stop(config, save=False)
+        runtime.pairing.issue_pairing_code(saved)
+    monkeypatch.setattr(Path, "exists", lambda self: self.name == "processes.json")
+    runtime.service.stop(config, save=False)
     monkeypatch.undo()
     assert json.loads((tmp_path / "session.json").read_text()) == {"drive_folder": "ComfyUI-Colab"}
 
@@ -1564,10 +1575,10 @@ def test_colab_start_stops_when_the_forwarded_address_is_not_usable(tmp_path, mo
     started = StartedProcesses(tmp_path, monkeypatch, proxy_answer=502)
     monkeypatch.setitem(sys.modules, "google.colab", SimpleNamespace(output=SimpleNamespace(eval_js=lambda script: None)))
     with pytest.raises(RuntimeError, match="ポート転送のアドレスを取得できませんでした"):
-        runtime.start({"drive_folder": "ComfyUI-Colab"}, "colab")
+        runtime.service.start({"drive_folder": "ComfyUI-Colab"}, "colab")
     assert started.spawned == [] and not (tmp_path / "processes.json").exists()
     with pytest.raises(ValueError):
-        runtime.start({"drive_folder": "ComfyUI-Colab"}, "direct")
+        runtime.service.start({"drive_folder": "ComfyUI-Colab"}, "direct")
 
 
 def test_connection_cells_start_one_way_each_and_only_the_tunnel_issues_codes():
@@ -1635,9 +1646,9 @@ def access_scenario(monkeypatch, steps):
         cloudflare = web.Application()
         cloudflare.router.add_get("/cdn-cgi/access/certs", issuer.certs)
         async with TestServer(app) as upstream, TestServer(cloudflare) as team:
-            monkeypatch.setattr(runtime, "access_certs_url", lambda domain: str(team.make_url("/cdn-cgi/access/certs")))
+            monkeypatch.setattr(runtime.cloudflare, "access_certs_url", lambda domain: str(team.make_url("/cdn-cgi/access/certs")))
             config = {"mode": "access", "access": dict(ACCESS)}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"))
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"))
             async with TestServer(proxy) as server:
                 async with ClientSession() as client:
                     await steps(client, server, issuer, seen)
@@ -1667,9 +1678,9 @@ def test_access_mode_admits_only_requests_cloudflare_access_signed(monkeypatch):
         # Nothing without Access's token, and no other way in: no pairing page, no key, no cookie.
         assert await status() == 401
         assert await status(route="/", Accept="text/html") == 401
-        assert await status(route=runtime.PAIRING_PATH) == 401
-        assert await status(Cookie=runtime.COOKIE + "=") == 401
-        async with client.post(server.make_url(runtime.PAIRING_PATH), data={"code": "12345678"}) as res:
+        assert await status(route=runtime.pairing.PAIRING_PATH) == 401
+        assert await status(Cookie=runtime.proxy.COOKIE + "=") == 401
+        async with client.post(server.make_url(runtime.pairing.PAIRING_PATH), data={"code": "12345678"}) as res:
             assert res.status == 401
         now = int(time.time())
         claims = {"aud": [ACCESS["aud"]], "iss": "https://" + ACCESS["team"], "iat": now, "exp": now + 600}
@@ -1718,14 +1729,14 @@ def test_access_mode_follows_key_rotation(monkeypatch):
         assert await status(issuer.token(kid="key-2", sub="another-session")) == 200 and issuer.fetches == 2
         # Who may sign in is the Access policy's decision; a service token has no email at all.
         assert await status(issuer.token(email=None)) == 200
-    monkeypatch.setattr(runtime, "ACCESS_KEYS_REFRESH", 0)
+    monkeypatch.setattr(runtime.proxy, "ACCESS_KEYS_REFRESH", 0)
     access_scenario(monkeypatch, steps)
 
 
 def test_access_settings_accept_what_the_dashboard_shows_and_refuse_the_rest():
-    settings = runtime.access_settings(" https://Comfy.Example.com/ ", " " + ACCESS["aud"].upper() + "\n")
+    settings = runtime.cloudflare.access_settings(" https://Comfy.Example.com/ ", " " + ACCESS["aud"].upper() + "\n")
     assert settings == {"hostname": "comfy.example.com", "aud": ACCESS["aud"]}
-    assert runtime.access_certs_url("myteam.cloudflareaccess.com") == "https://myteam.cloudflareaccess.com/cdn-cgi/access/certs"
+    assert runtime.cloudflare.access_certs_url("myteam.cloudflareaccess.com") == "https://myteam.cloudflareaccess.com/cdn-cgi/access/certs"
     for arguments, error in (
             (("", ACCESS["aud"]), "公開ホスト名が不正"),
             (("localhost", ACCESS["aud"]), "公開ホスト名が不正"),
@@ -1733,7 +1744,7 @@ def test_access_settings_accept_what_the_dashboard_shows_and_refuse_the_rest():
             (("comfy.example.com", "short"), "AUDタグが不正"),
             (("comfy.example.com", None), "CF_ACCESS_AUD")):
         with pytest.raises(ValueError, match=error):
-            runtime.access_settings(*arguments)
+            runtime.cloudflare.access_settings(*arguments)
 
 
 def sign_in_redirect(url):
@@ -1748,9 +1759,9 @@ def test_access_start_runs_the_named_tunnel_without_exposing_its_token(tmp_path,
     config = {"drive_folder": "ComfyUI-Colab"}
     for bad in ("", None, "cloudflared.exe service install " + token, "short"):
         with pytest.raises(ValueError, match="トンネルのトークンが不正"):
-            runtime.start_with_access(config, "comfy.example.com", ACCESS["aud"], bad)
+            runtime.service.start_with_access(config, "comfy.example.com", ACCESS["aud"], bad)
     assert started.spawned == []
-    runtime.start_with_access(config, "comfy.example.com", ACCESS["aud"], " " + token + "\n")
+    runtime.service.start_with_access(config, "comfy.example.com", ACCESS["aud"], " " + token + "\n")
     output = capsys.readouterr().out
     # The team the hostname sends visitors to is found and used without being shown.
     assert "cloudflareaccess.com" not in output
@@ -1766,8 +1777,8 @@ def test_access_start_runs_the_named_tunnel_without_exposing_its_token(tmp_path,
     assert "https://comfy.example.com/\n" in output and "ペアリングコード" not in output
     assert not (tmp_path / "pairing.json").exists()
     assert set(json.loads((tmp_path / "processes.json").read_text())) == {"supervisor", "proxy", "tunnel"}
-    monkeypatch.setattr(runtime.Path, "exists", lambda self: self.name == "processes.json")
-    runtime.stop(config, save=False)
+    monkeypatch.setattr(Path, "exists", lambda self: self.name == "processes.json")
+    runtime.service.stop(config, save=False)
     monkeypatch.undo()
     assert json.loads((tmp_path / "session.json").read_text()) == {"drive_folder": "ComfyUI-Colab"}
 
@@ -1792,10 +1803,10 @@ def test_access_start_does_nothing_unless_the_hostname_sends_visitors_to_access(
         return SimpleNamespace(text="", **answer)
 
     started = StartedProcesses(tmp_path, monkeypatch, proxy_answer=401, public=public)
-    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
     status = "-" if answer is None else str(answer["status_code"])
     with pytest.raises(RuntimeError, match=f"ログイン画面への転送を確認できませんでした（応答: {status}）"):
-        runtime.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
+        runtime.service.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
     # There is no team to check signatures against, so nothing runs and nothing is saved.
     assert started.spawned == [] and not (tmp_path / "session.json").exists() and not (tmp_path / "processes.json").exists()
 
@@ -1812,10 +1823,10 @@ def test_access_team_comes_from_the_sign_in_the_hostname_redirects_to(tmp_path, 
             "Location": "https://another-team.cloudflareaccess.com/cdn-cgi/access/login/comfy.example.com?kid=x&redirect_url=%2F"})
 
     started = StartedProcesses(tmp_path, monkeypatch, proxy_answer=401, public=public)
-    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
-    assert runtime.access_team_domain("comfy.example.com") == "another-team.cloudflareaccess.com"
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    assert runtime.cloudflare.access_team_domain("comfy.example.com") == "another-team.cloudflareaccess.com"
     assert asked == ["https://comfy.example.com/"] * 3
-    runtime.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
+    runtime.service.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
     saved = json.loads((tmp_path / "session.json").read_text())
     assert saved["access"] == {"hostname": "comfy.example.com", "aud": ACCESS["aud"], "team": "another-team.cloudflareaccess.com"}
     assert "cloudflareaccess.com" not in capsys.readouterr().out
@@ -1823,7 +1834,7 @@ def test_access_team_comes_from_the_sign_in_the_hostname_redirects_to(tmp_path, 
     # Running: a second start is refused before anything is asked or changed.
     asked.clear()
     with pytest.raises(RuntimeError, match="既に起動済みです"):
-        runtime.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
+        runtime.service.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
     assert asked == []
 
 
@@ -1847,31 +1858,31 @@ def test_access_cell_takes_secrets_from_colab_and_only_the_hostname_from_its_for
 def test_displayed_logs_hide_tunnel_and_access_tokens():
     token = "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0="
     signed = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleS0xIn0.eyJhdWQiOlsiYTEiXSwiZXhwIjoxfQ.c2lnbmF0dXJl-_abc"
-    shown = runtime.redact(f"ERR token={token} Cf-Access-Jwt-Assertion: {signed} done")
+    shown = runtime.service.redact(f"ERR token={token} Cf-Access-Jwt-Assertion: {signed} done")
     assert token not in shown and "c2lnbmF0dXJl" not in shown and shown.startswith("ERR token=[REDACTED] ") and shown.endswith(" done")
 
 
 def test_tunnel_settings_are_read_from_what_cloudflared_reports():
     proxy, fallback = "http://127.0.0.1:8189", "http_status:404"
-    assert runtime.tunnel_services("INF Starting tunnel\nINF Registered tunnel connection connIndex=0\n") is None
-    assert runtime.tunnel_services(tunnel_settings(proxy, fallback)) == [proxy, fallback]
+    assert runtime.cloudflare.tunnel_services("INF Starting tunnel\nINF Registered tunnel connection connIndex=0\n") is None
+    assert runtime.cloudflare.tunnel_services(tunnel_settings(proxy, fallback)) == [proxy, fallback]
     # The latest settings count: the dashboard can change them while the tunnel runs.
     log = tunnel_settings(proxy, fallback) + "INF Registered tunnel connection\n" + tunnel_settings("http://localhost:8188", fallback, version=2)
-    assert runtime.tunnel_services(log) == ["http://localhost:8188", fallback]
+    assert runtime.cloudflare.tunnel_services(log) == ["http://localhost:8188", fallback]
     # The same message when cloudflared writes its log as JSON.
     as_json = json.dumps({"level": "info", "config": json.dumps({"ingress": [{"service": proxy}]}), "version": 1,
                           "message": "Updated to new configuration"})
-    assert runtime.tunnel_services(as_json + "\n") == [proxy]
+    assert runtime.cloudflare.tunnel_services(as_json + "\n") == [proxy]
     # Settings that cannot be read are unknown, not accepted.
-    assert runtime.tunnel_services('INF Updated to new configuration config="{broken" version=3\n') is None
-    assert runtime.tunnel_services('INF Updated to new configuration config="{\\"ingress\\":null}" version=3\n') is None
+    assert runtime.cloudflare.tunnel_services('INF Updated to new configuration config="{broken" version=3\n') is None
+    assert runtime.cloudflare.tunnel_services('INF Updated to new configuration config="{\\"ingress\\":null}" version=3\n') is None
     for services, accepted in (
             ([proxy, fallback], True), (["http://localhost:8189/", "http_status:503"], True), ([proxy, proxy], True),
             (["http://127.0.0.1:8188", fallback], False),      # ComfyUI itself, past every check.
             ([proxy, "http://127.0.0.1:9000", fallback], False),  # Another service of the runtime on a second hostname.
             (["https://127.0.0.1:8189", fallback], False), (["http://127.0.0.1:81890", fallback], False),
             (["ssh://localhost:22"], False), (["hello_world"], False), ([fallback], False), ([], False)):
-        assert runtime.tunnel_leads_to_proxy(services) is accepted, services
+        assert runtime.cloudflare.tunnel_leads_to_proxy(services) is accepted, services
 
 
 @pytest.mark.parametrize("services", [("http://localhost:8188", "http_status:404"),
@@ -1879,10 +1890,10 @@ def test_tunnel_settings_are_read_from_what_cloudflared_reports():
 def test_access_start_stops_when_the_tunnel_leads_anywhere_but_the_proxy(tmp_path, monkeypatch, capsys, services):
     started = StartedProcesses(tmp_path, monkeypatch, proxy_answer=401, public=sign_in_redirect,
                                tunnel_log="INF Registered tunnel connection connIndex=0\n" + tunnel_settings(*services))
-    actual = runtime.Path.exists
-    monkeypatch.setattr(runtime.Path, "exists", lambda self: tmp_path in self.parents and actual(self))  # No /proc here.
+    actual = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: tmp_path in self.parents and actual(self))  # No /proc here.
     with pytest.raises(RuntimeError, match="転送先が http://127.0.0.1:8189 だけになっていません（現在の設定: " + ", ".join(services)):
-        runtime.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
+        runtime.service.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
     monkeypatch.undo()
     # The tunnel was up for a moment: it is taken down again, and no address is shown.
     assert [args[-1] for args in started.spawned] == ["proxy", "supervise", "run"]
@@ -1893,14 +1904,14 @@ def test_access_start_stops_when_the_tunnel_leads_anywhere_but_the_proxy(tmp_pat
 def test_access_start_says_so_when_the_tunnel_settings_cannot_be_read(tmp_path, monkeypatch, capsys):
     StartedProcesses(tmp_path, monkeypatch, proxy_answer=401, public=sign_in_redirect,
                      tunnel_log="INF Registered tunnel connection connIndex=0\n")
-    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: None)
-    runtime.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    runtime.service.start_with_access({"drive_folder": "ComfyUI-Colab"}, "comfy.example.com", ACCESS["aud"], "eyJ" + "a" * 60)
     output = capsys.readouterr().out
     assert "トンネルの転送先の設定を読み取れませんでした" in output and "https://comfy.example.com/" in output
 
 
 def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private, monkeypatch):
-    monkeypatch.setattr(runtime, "REPOSITORY_URL", runtime.REPOSITORY_URL)  # Put back after the test changes it.
+    monkeypatch.setattr(runtime.stop_button, "REPOSITORY_URL", runtime.stop_button.REPOSITORY_URL)  # Put back after the test changes it.
     from aiohttp import web, ClientSession, CookieJar
     from aiohttp.test_utils import TestServer
     import gzip
@@ -1922,7 +1933,7 @@ def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private
         tag = b'<script defer src="/_colab/stop.js"></script></HEAD>'
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True), auto_decompress=False) as client:
                     signed_in(client, server)
@@ -1946,27 +1957,27 @@ def test_proxy_adds_the_stop_button_to_the_comfyui_page_and_nothing_else(private
                     async with client.post(server.make_url("/"), data=b"x") as res:
                         assert b"/_colab/stop.js" not in await res.read()
                     # The script: the button's texts in this language, and only for a browser that is let in.
-                    async with client.get(server.make_url(runtime.STOP_SCRIPT_PATH), headers={"Accept-Encoding": "identity"}) as res:
+                    async with client.get(server.make_url(runtime.stop_button.STOP_SCRIPT_PATH), headers={"Accept-Encoding": "identity"}) as res:
                         script = await res.text()
                         assert res.status == 200 and res.content_type == "application/javascript"
                         for text in ("停止", "接続を解除してランタイムを削除", "接続を解除", "キャンセル"):
                             assert json.dumps(text) in script
                         assert "__TEXTS__" not in script and "__STOP_PATH__" not in script and '"/_colab/stop"' in script
                         # The link to the repository opens outside the page and tells that page nothing.
-                        assert f'const repository = "{runtime.REPOSITORY_URL}";' in script and "__REPOSITORY__" not in script
-                        assert runtime.REPOSITORY_URL.startswith("https://github.com/") and 'rel = "noopener noreferrer"' in script
-                        assert json.dumps(runtime.t("menu.repository")) in script
+                        assert f'const repository = "{runtime.stop_button.REPOSITORY_URL}";' in script and "__REPOSITORY__" not in script
+                        assert runtime.stop_button.REPOSITORY_URL.startswith("https://github.com/") and 'rel = "noopener noreferrer"' in script
+                        assert json.dumps(runtime.messages.t("menu.repository")) in script
                 async with ClientSession() as stranger:
-                    for route in (runtime.STOP_SCRIPT_PATH, runtime.STOP_PATH):
+                    for route in (runtime.stop_button.STOP_SCRIPT_PATH, runtime.stop_button.STOP_PATH):
                         async with stranger.get(server.make_url(route)) as res:
                             assert res.status == 401
-                    async with stranger.post(server.make_url(runtime.STOP_PATH), json={"delete_runtime": True}) as res:
+                    async with stranger.post(server.make_url(runtime.stop_button.STOP_PATH), json={"delete_runtime": True}) as res:
                         assert res.status == 401
         assert not (private / "stop-request.json").exists()
-        assert runtime.with_stop_button(b"no head here") == b"no head here"
+        assert runtime.stop_button.with_stop_button(b"no head here") == b"no head here"
         for address in ("", "javascript:alert(1)", "http://github.com/x/y"):  # Nothing but an https address is linked.
-            runtime.REPOSITORY_URL = address
-            assert 'const repository = "";' in runtime.stop_button_script()
+            runtime.stop_button.REPOSITORY_URL = address
+            assert 'const repository = "";' in runtime.stop_button.stop_button_script()
     asyncio.run(scenario())
 
 
@@ -1986,11 +1997,11 @@ def test_stop_button_leaves_a_request_only_for_a_signed_in_browser_of_this_site(
         request_file = private / "stop-request.json"
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
                     signed_in(client, server)
-                    stop = server.make_url(runtime.STOP_PATH)
+                    stop = server.make_url(runtime.stop_button.STOP_PATH)
                     async with client.get(stop) as res:
                         assert res.status == 200 and await res.json() == {"state": "idle"}
                     # Another site open in the same browser cannot stop anything, or delete the runtime.
@@ -2008,7 +2019,7 @@ def test_stop_button_leaves_a_request_only_for_a_signed_in_browser_of_this_site(
                     assert json.loads(request_file.read_text()) == {"delete_runtime": True}
                     # The notebook could not save: the page is told, and may ask again.
                     request_file.unlink()
-                    runtime.private_write(private / "stop-status.json", '{"state": "failed"}')
+                    runtime.filesystem.private_write(private / "stop-status.json", '{"state": "failed"}')
                     async with client.get(stop) as res:
                         assert await res.json() == {"state": "failed"}
                     async with client.post(stop, json={"delete_runtime": False}) as res:
@@ -2019,52 +2030,52 @@ def test_stop_button_leaves_a_request_only_for_a_signed_in_browser_of_this_site(
 
 def test_stop_request_is_carried_out_by_the_notebook_and_deletes_the_runtime_only_when_asked(private, monkeypatch, capsys):
     done = []
-    monkeypatch.setattr(runtime, "stop", lambda config, save=True: done.append(("stop", save)))
-    monkeypatch.setattr(runtime, "delete_colab_runtime", lambda: done.append("delete"))
+    monkeypatch.setattr(runtime.service, "stop", lambda config, save=True: done.append(("stop", save)))
+    monkeypatch.setattr(runtime.stop_button, "delete_colab_runtime", lambda: done.append("delete"))
     config = {"drive_folder": "ComfyUI-Colab", "mode": "tunnel"}
-    assert runtime.carry_out_stop_request(config) is False and done == []  # Nothing was asked.
-    runtime.request_stop(False)
-    assert runtime.stop_request_state() == "pending"
-    assert runtime.carry_out_stop_request(config) is True and done == [("stop", True)]
+    assert runtime.stop_button.carry_out_stop_request(config) is False and done == []  # Nothing was asked.
+    runtime.stop_button.request_stop(False)
+    assert runtime.stop_button.stop_request_state() == "pending"
+    assert runtime.stop_button.carry_out_stop_request(config) is True and done == [("stop", True)]
     done.clear()
-    runtime.request_stop(True)
-    assert runtime.carry_out_stop_request(config) is True and done == [("stop", True), "delete"]  # Saved first.
+    runtime.stop_button.request_stop(True)
+    assert runtime.stop_button.carry_out_stop_request(config) is True and done == [("stop", True), "delete"]  # Saved first.
 
     def failing_stop(config, save=True):
         raise RuntimeError("Drive is full")
     done.clear()
-    monkeypatch.setattr(runtime, "stop", failing_stop)
-    runtime.request_stop(True)
+    monkeypatch.setattr(runtime.service, "stop", failing_stop)
+    runtime.stop_button.request_stop(True)
     # The save failed: ComfyUI keeps running, the page hears about it, and the runtime is not deleted.
-    assert runtime.carry_out_stop_request(config) is False and done == []
-    assert runtime.stop_request_state() == "failed" and not (private / "stop-request.json").exists()
+    assert runtime.stop_button.carry_out_stop_request(config) is False and done == []
+    assert runtime.stop_button.stop_request_state() == "failed" and not (private / "stop-request.json").exists()
     assert "停止できませんでした" in capsys.readouterr().out
-    assert runtime.carry_out_stop_request(config) is False  # Not tried again until asked again.
-    runtime.request_stop(False)
-    assert runtime.stop_request_state() == "pending"
+    assert runtime.stop_button.carry_out_stop_request(config) is False  # Not tried again until asked again.
+    runtime.stop_button.request_stop(False)
+    assert runtime.stop_button.stop_request_state() == "pending"
 
 
 def test_starting_watches_for_the_stop_button_and_stopping_ends_the_watch(tmp_path, monkeypatch):
     import threading
     started = StartedProcesses(tmp_path, monkeypatch, proxy_answer=401)
-    runtime.private_write(tmp_path / "stop-request.json", '{"delete_runtime": true}')  # Left over from before.
+    runtime.filesystem.private_write(tmp_path / "stop-request.json", '{"delete_runtime": true}')  # Left over from before.
     config = {"drive_folder": "ComfyUI-Colab"}
-    runtime.start(config, "tunnel")
+    runtime.service.start(config, "tunnel")
     assert started.followed == [config] and not (tmp_path / "stop-request.json").exists()
     # The watch itself: it keeps looking until the request is carried out or the notebook stops.
     monkeypatch.undo()
-    monkeypatch.setattr(runtime, "PRIVATE", tmp_path)
-    monkeypatch.setattr(runtime, "CONFIG", tmp_path / "session.json")
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path)
+    monkeypatch.setattr(runtime.paths, "CONFIG", tmp_path / "session.json")
     looked = threading.Event()
-    monkeypatch.setattr(runtime, "carry_out_stop_request", lambda config: looked.set())
-    monkeypatch.setattr(runtime, "STOP_WATCH_SECONDS", 0.05)
+    monkeypatch.setattr(runtime.stop_button, "carry_out_stop_request", lambda config: looked.set())
+    monkeypatch.setattr(runtime.stop_button, "STOP_WATCH_SECONDS", 0.05)
     before = threading.active_count()
-    runtime.follow_stop_requests(config)
+    runtime.stop_button.follow_stop_requests(config)
     assert looked.wait(5)
-    watch = runtime.STOP_WATCH[0]
-    monkeypatch.setattr(runtime.os, "killpg", lambda pid, sig: None, raising=False)
-    runtime.private_write(tmp_path / "stop-request.json", '{"delete_runtime": false}')
-    runtime.stop(config, save=False)
+    watch = runtime.stop_button.STOP_WATCH[0]
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: None, raising=False)
+    runtime.filesystem.private_write(tmp_path / "stop-request.json", '{"delete_runtime": false}')
+    runtime.service.stop(config, save=False)
     assert watch.is_set() and not (tmp_path / "stop-request.json").exists() and not (tmp_path / "stop-status.json").exists()
     for _ in range(50):
         if threading.active_count() <= before:
@@ -2090,7 +2101,7 @@ def test_proxy_takes_only_the_opening_of_the_page_from_other_sites(config, capsy
         app = web.Application()
         app.router.add_route("*", "/{path:.*}", backend)
         async with TestServer(app) as upstream:
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
                     signed_in(client, server)
@@ -2107,7 +2118,7 @@ def test_proxy_takes_only_the_opening_of_the_page_from_other_sites(config, capsy
                         assert await status("GET", "/", site=site, mode="navigate", dest="iframe") == 403  # A frame.
                         assert await status("GET", "/", site=site, mode="no-cors", dest="script") == 403
                         assert await status("POST", "/", site=site, mode="navigate", dest="document") == 403  # A form.
-                        assert await status("GET", runtime.STOP_PATH, site=site, mode="cors", dest="empty") == 403
+                        assert await status("GET", runtime.stop_button.STOP_PATH, site=site, mode="cors", dest="empty") == 403
                     assert reached == []
                     # Opening the page from a link elsewhere (Colab's output, a sign-in page) is the one thing taken.
                     for route in ("/", "/?workflow=1", "/index.html"):
@@ -2131,7 +2142,7 @@ def test_proxy_keeps_its_sign_in_cookie_and_its_pages_out_of_other_hands(capsys)
             response = web.Response(text="<html><head></head><body>ComfyUI</body></html>", content_type="text/html")
             if request.path == "/node":
                 # A custom node answering with cookies of its own choosing.
-                for cookie in ("comfy_colab=replaced; Path=/", runtime.COOKIE + "=replaced; Path=/; Secure",
+                for cookie in ("comfy_colab=replaced; Path=/", runtime.proxy.COOKIE + "=replaced; Path=/; Secure",
                                "CF_Authorization=replaced; Path=/", "node-setting=kept; Path=/"):
                     response.headers.add("Set-Cookie", cookie)
                 response.headers["Content-Security-Policy"] = "img-src 'self'"
@@ -2143,7 +2154,7 @@ def test_proxy_keeps_its_sign_in_cookie_and_its_pages_out_of_other_hands(capsys)
         app.router.add_route("*", "/{path:.*}", backend)
         async with TestServer(app) as upstream:
             config = {"mode": "tunnel", "cookie_secret": "test-cookie-secret"}
-            proxy = runtime.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
+            proxy = runtime.proxy.create_proxy(config, str(upstream.make_url("/")).rstrip("/"), secure_cookie=False)
             async with TestServer(proxy) as server:
                 async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as client:
                     signed_in(client, server)
@@ -2166,7 +2177,7 @@ def test_proxy_keeps_its_sign_in_cookie_and_its_pages_out_of_other_hands(capsys)
                             assert res.status == 403
                 async with ClientSession() as stranger:
                     for _ in range(5):
-                        async with stranger.post(server.make_url(runtime.PAIRING_PATH), data={"code": "1"},
+                        async with stranger.post(server.make_url(runtime.pairing.PAIRING_PATH), data={"code": "1"},
                                                  headers={"Origin": "https://stranger.example"}) as res:
                             assert res.status == 403
     asyncio.run(scenario())
@@ -2193,78 +2204,78 @@ def view_commands(storage, monkeypatch):
         state["commands"].append((list(map(str, args)), False))
         state["mounted"] = False
 
-    monkeypatch.setattr(runtime, "DRIVE_MODELS", storage_root(storage) / "drive-models")
-    monkeypatch.setattr(runtime, "run", run)
-    monkeypatch.setattr(runtime.subprocess, "run", unmount)
-    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/bindfs" if state["installed"] else None)
-    monkeypatch.setattr(runtime.os.path, "ismount", lambda path: state["mounted"])
-    monkeypatch.setattr(runtime.os, "geteuid", lambda: runtime.DRIVE_MODELS.stat().st_uid, raising=False)
-    monkeypatch.setattr(runtime, "APT_INDEX_REFRESHED", [])
+    monkeypatch.setattr(runtime.paths, "DRIVE_MODELS", storage_root(storage) / "drive-models")
+    monkeypatch.setattr(runtime.commands, "run", run)
+    monkeypatch.setattr(subprocess, "run", unmount)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/bindfs" if state["installed"] else None)
+    monkeypatch.setattr(os.path, "ismount", lambda path: state["mounted"])
+    monkeypatch.setattr(os, "geteuid", lambda: runtime.paths.DRIVE_MODELS.stat().st_uid, raising=False)
+    monkeypatch.setattr(runtime.dependencies, "APT_INDEX_REFRESHED", [])
     return state
 
 
 def storage_root(storage):
-    return runtime.PRIVATE.parent
+    return runtime.paths.PRIVATE.parent
 
 
 def test_direct_access_shows_the_application_only_the_models_folder_read_only(storage, view_commands):
-    runtime.show_drive_models(storage)
+    runtime.drive.show_drive_models(storage)
     commands = view_commands["commands"]
-    source = str(runtime.drive_root(storage) / "models")
+    source = str(runtime.drive.drive_root(storage) / "models")
     # bindfs is installed without the FUSE tools it merely recommends: Drive is mounted with the ones in place.
     assert commands[:2] == [(["apt-get", "update", "-qq"], False),
                             (["apt-get", "install", "-y", "-qq", "--no-install-recommends", "bindfs"], False)]
     mount, as_root = commands[2]
-    assert not as_root and mount[0] == "bindfs" and mount[-2:] == [source, str(runtime.DRIVE_MODELS)]
+    assert not as_root and mount[0] == "bindfs" and mount[-2:] == [source, str(runtime.paths.DRIVE_MODELS)]
     assert "-r" in mount and "--force-user=comfy" in mount and "--perms=a=rX" in mount and mount[mount.index("-o") + 1] == "allow_other"
     # Not Drive, not the folder above the models: only that one folder.
     assert Path(source).name == "models" and Path(source).parent.name == "ComfyUI-Colab"
     # The application user is made to look in before anything relies on it.
-    assert commands[3] == (["ls", str(runtime.DRIVE_MODELS)], True)
-    assert runtime.DRIVE_MODELS.parent != runtime.BASE and runtime.BASE not in runtime.DRIVE_MODELS.parents
+    assert commands[3] == (["ls", str(runtime.paths.DRIVE_MODELS)], True)
+    assert runtime.paths.DRIVE_MODELS.parent != runtime.paths.BASE and runtime.paths.BASE not in runtime.paths.DRIVE_MODELS.parents
     commands.clear()
-    runtime.show_drive_models(storage)  # Already there: nothing is run again.
+    runtime.drive.show_drive_models(storage)  # Already there: nothing is run again.
     assert commands == []
-    runtime.hide_drive_models()
-    assert commands == [(["umount", str(runtime.DRIVE_MODELS)], False)] and not view_commands["mounted"]
+    runtime.drive.hide_drive_models()
+    assert commands == [(["umount", str(runtime.paths.DRIVE_MODELS)], False)] and not view_commands["mounted"]
 
 
 @pytest.mark.parametrize("failing", ["bindfs", "ls"])
 def test_direct_access_that_cannot_be_prepared_says_how_to_copy_instead(storage, view_commands, failing):
     view_commands["fail"] = failing
     with pytest.raises(RuntimeError) as failure:
-        runtime.show_drive_models(storage)
+        runtime.drive.show_drive_models(storage)
     assert "MODEL_ACCESS" in str(failure.value) and "copy" in str(failure.value) and "Permission denied" in str(failure.value)
     assert not view_commands["mounted"]  # Nothing half-mounted is left.
 
 
 def test_direct_access_refuses_a_place_someone_else_prepared(storage, view_commands):
-    runtime.DRIVE_MODELS.mkdir()
-    (runtime.DRIVE_MODELS / "planted").write_text("x")
+    runtime.paths.DRIVE_MODELS.mkdir()
+    (runtime.paths.DRIVE_MODELS / "planted").write_text("x")
     with pytest.raises(RuntimeError, match="MODEL_ACCESS"):
-        runtime.show_drive_models(storage)
+        runtime.drive.show_drive_models(storage)
     assert not any(args[0] == "bindfs" for args, _ in view_commands["commands"])
 
 
 def test_models_are_linked_or_copied_as_setup_chose(storage, view_commands, monkeypatch, capsys):
     asked = []
-    monkeypatch.setattr(runtime, "app_action", lambda action, *args, **kwargs: asked.append((action, *map(str, args))) or b"3")
-    models = runtime.drive_root(storage) / "models"
+    monkeypatch.setattr(runtime.app_tree, "app_action", lambda action, *args, **kwargs: asked.append((action, *map(str, args))) or b"3")
+    models = runtime.drive.drive_root(storage) / "models"
     (models / "loras").mkdir()
     (models / "loras/style.safetensors").write_bytes(b"lora")
-    assert runtime.sync_models({**storage, "model_access": "direct"}) == 3
-    assert asked == [("link-models", str(runtime.DRIVE_MODELS))] and view_commands["mounted"]
-    assert runtime.t("models.linked", linked=3) in capsys.readouterr().out
+    assert runtime.drive.sync_models({**storage, "model_access": "direct"}) == 3
+    assert asked == [("link-models", str(runtime.paths.DRIVE_MODELS))] and view_commands["mounted"]
+    assert runtime.messages.t("models.linked", linked=3) in capsys.readouterr().out
     asked.clear()
-    assert runtime.sync_models({**storage, "model_access": "copy"}) == 1  # As before: a copy in the runtime's cache.
+    assert runtime.drive.sync_models({**storage, "model_access": "copy"}) == 1  # As before: a copy in the runtime's cache.
     assert [entry[:2] for entry in asked] == [("put", "models/loras/style.safetensors")]
     asked.clear()
     # A runtime set up before the choice existed copies too.
-    assert runtime.sync_models(storage) == 1 and asked[0][0] == "put"
+    assert runtime.drive.sync_models(storage) == 1 and asked[0][0] == "put"
 
 
 def test_links_to_drive_models_follow_drive_and_leave_local_models_alone(storage, tmp_path):
-    view, cache = tmp_path / "view", runtime.BASE / "models"
+    view, cache = tmp_path / "view", runtime.paths.BASE / "models"
     (view / "loras/sdxl").mkdir(parents=True)
     (view / "loras/sdxl/style.safetensors").write_bytes(b"on drive")
     (view / "loras/placeholder").write_bytes(b"")
@@ -2278,22 +2289,22 @@ def test_links_to_drive_models_follow_drive_and_leave_local_models_alone(storage
     except OSError:
         pytest.skip("this account may not create symbolic links")
     sink = io.BytesIO()
-    runtime.app_tree_action("link-models", [str(view)], None, sink)
+    runtime.app_tree.app_tree_action("link-models", [str(view)], None, sink)
     link = cache / "loras/sdxl/style.safetensors"
     assert sink.getvalue() == b"1" and link.is_symlink() and link.read_bytes() == b"on drive"
     # Not markers or unfinished uploads, and never in place of a model this runtime has itself.
     assert not (cache / "loras/placeholder").exists() and not (cache / "loras/upload.part").exists()
     assert not (cache / "checkpoints/base.safetensors").is_symlink()
     assert (cache / "checkpoints/base.safetensors").read_bytes() == b"downloaded on this runtime"
-    assert [file.name for file in runtime.regular_files(cache)] == ["base.safetensors"]  # Links are not saved to Drive.
+    assert [file.name for file in runtime.filesystem.regular_files(cache)] == ["base.safetensors"]  # Links are not saved to Drive.
     # Run again: nothing new. Removed from Drive: the link goes, other links and files stay.
     (view / "loras/other.safetensors").write_bytes(b"another")
     sink = io.BytesIO()
-    runtime.app_tree_action("link-models", [str(view)], None, sink)
+    runtime.app_tree.app_tree_action("link-models", [str(view)], None, sink)
     assert sink.getvalue() == b"1"
     (view / "loras/sdxl/style.safetensors").unlink()
     sink = io.BytesIO()
-    runtime.app_tree_action("link-models", [str(view)], None, sink)
+    runtime.app_tree.app_tree_action("link-models", [str(view)], None, sink)
     assert sink.getvalue() == b"0" and not os.path.lexists(link) and (cache / "loras/other.safetensors").is_symlink()
     assert (cache / "checkpoints/base.safetensors").exists()
 
@@ -2304,12 +2315,12 @@ def test_notebook_offers_the_choice_and_releases_the_view_before_unmounting_driv
     assert "model_access=MODEL_ACCESS" in setup
     assert stop.index("runtime.hide_drive_models()") < stop.index("drive.flush_and_unmount()")
     order = []
-    monkeypatch.setattr(runtime, "hide_drive_models", lambda: order.append("hide"))
+    monkeypatch.setattr(runtime.drive, "hide_drive_models", lambda: order.append("hide"))
     from types import SimpleNamespace
     monkeypatch.setitem(sys.modules, "google.colab", SimpleNamespace(
         drive=SimpleNamespace(flush_and_unmount=lambda: order.append("unmount")),
         runtime=SimpleNamespace(unassign=lambda: order.append("unassign"))))
-    runtime.delete_colab_runtime()
+    runtime.stop_button.delete_colab_runtime()
     assert order == ["hide", "unmount", "unassign"]
 
 
@@ -2318,17 +2329,17 @@ def test_download_progress_is_a_bar_in_the_notebook_and_plain_lines_elsewhere(mo
     megabyte = 1048576
     monkeypatch.setitem(sys.modules, "tqdm", None)
     monkeypatch.setitem(sys.modules, "tqdm.auto", None)  # Not installed.
-    plain = runtime.download_progress(200 * megabyte)
+    plain = runtime.downloads.download_progress(200 * megabyte)
     for _ in range(50):
         plain.update(4 * megabyte)
     plain.close()
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 10 and lines[0] == runtime.t("download.progress", done=20, total=200, percent=10)
-    assert lines[-1] == runtime.t("download.progress", done=200, total=200, percent=100)
-    unknown = runtime.download_progress(0)  # The site did not say how large the file is.
+    assert len(lines) == 10 and lines[0] == runtime.messages.t("download.progress", done=20, total=200, percent=10)
+    assert lines[-1] == runtime.messages.t("download.progress", done=200, total=200, percent=100)
+    unknown = runtime.downloads.download_progress(0)  # The site did not say how large the file is.
     for _ in range(300):
         unknown.update(4 * megabyte)
-    assert capsys.readouterr().out.splitlines() == [runtime.t("download.progress_size", done=512), runtime.t("download.progress_size", done=1024)]
+    assert capsys.readouterr().out.splitlines() == [runtime.messages.t("download.progress_size", done=512), runtime.messages.t("download.progress_size", done=1024)]
     bars = []
 
     class Bar:
@@ -2344,9 +2355,9 @@ def test_download_progress_is_a_bar_in_the_notebook_and_plain_lines_elsewhere(mo
 
     monkeypatch.setitem(sys.modules, "tqdm", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "tqdm.auto", SimpleNamespace(tqdm=Bar))
-    bar = runtime.download_progress(200 * megabyte)
+    bar = runtime.downloads.download_progress(200 * megabyte)
     assert bar is bars[0] and bar.options["total"] == 200 * megabyte and bar.options["unit"] == "B" and bar.options["unit_scale"]
-    assert runtime.download_progress(0).options["total"] is None
+    assert runtime.downloads.download_progress(0).options["total"] is None
 
 
 @pytest.mark.parametrize("failing", [False, True])
@@ -2381,15 +2392,15 @@ def test_model_download_reports_its_progress_and_always_ends_the_bar(storage, mo
                 raise OSError("connection reset")
             yield b"ghi"
 
-    monkeypatch.setattr(runtime, "download_progress", Bar)
-    monkeypatch.setattr(runtime, "checked_https_url", lambda url: SimpleNamespaceHost())
+    monkeypatch.setattr(runtime.downloads, "download_progress", Bar)
+    monkeypatch.setattr(runtime.downloads, "checked_https_url", lambda url: SimpleNamespaceHost())
     session = type("Session", (), {"get": lambda self, url, **kwargs: Response()})()
-    target = runtime.PRIVATE / "model.part"
+    target = runtime.paths.PRIVATE / "model.part"
     if failing:
         with pytest.raises(OSError):
-            runtime.stream_model(session, "https://huggingface.co/a/b/resolve/main/m.safetensors", target)
+            runtime.downloads.stream_model(session, "https://huggingface.co/a/b/resolve/main/m.safetensors", target)
     else:
-        digest, _ = runtime.stream_model(session, "https://huggingface.co/a/b/resolve/main/m.safetensors", target)
+        digest, _ = runtime.downloads.stream_model(session, "https://huggingface.co/a/b/resolve/main/m.safetensors", target)
         import hashlib
         assert digest == hashlib.sha256(b"abcdefghi").hexdigest()
     assert bars[0].total == 9 and bars[0].done == (6 if failing else 9) and bars[0].closed
@@ -2400,35 +2411,35 @@ class SimpleNamespaceHost:
 
 
 def test_model_for_this_runtime_only_never_reaches_drive(storage, monkeypatch, capsys):
-    drive_models = runtime.drive_root(storage) / "models"
+    drive_models = runtime.drive.drive_root(storage) / "models"
     link = "https://huggingface.co/author/repo/blob/main/split/model.safetensors"
     fake_requests(monkeypatch, [{"data": b"runtime model"}])
-    runtime.fetch_model(storage, link, "vae", runtime_only=True)
-    local = runtime.BASE / "models/vae/model.safetensors"
+    runtime.downloads.fetch_model(storage, link, "vae", runtime_only=True)
+    local = runtime.paths.BASE / "models/vae/model.safetensors"
     assert local.read_bytes() == b"runtime model"
     assert not (drive_models / "vae").exists() and list(drive_models.rglob("*")) == []
-    assert runtime.t("download.saved_runtime") in capsys.readouterr().out
+    assert runtime.messages.t("download.saved_runtime") in capsys.readouterr().out
     # Nothing unfinished stays behind where the download was checked.
-    assert list((runtime.PRIVATE / "downloads").iterdir()) == []
+    assert list((runtime.paths.PRIVATE / "downloads").iterdir()) == []
     # Saving the environment sends the runtime's new models to Drive, but not this one.
-    (runtime.BASE / "models/vae/from-manager.safetensors").write_bytes(b"downloaded in ComfyUI")
-    runtime.save_new_cache_models(storage, force=True)
+    (runtime.paths.BASE / "models/vae/from-manager.safetensors").write_bytes(b"downloaded in ComfyUI")
+    runtime.drive.save_new_cache_models(storage, force=True)
     assert sorted(p.name for p in (drive_models / "vae").iterdir()) == ["from-manager.safetensors"]
     # The same name again is refused before and after downloading, and a wrong hash leaves nothing.
     fake_requests(monkeypatch, [{"data": b"again"}])
-    with pytest.raises(FileExistsError, match=re.escape(runtime.t("download.exists_runtime"))):
-        runtime.fetch_model(storage, link, "vae", runtime_only=True)
+    with pytest.raises(FileExistsError, match=re.escape(runtime.messages.t("download.exists_runtime"))):
+        runtime.downloads.fetch_model(storage, link, "vae", runtime_only=True)
     fake_requests(monkeypatch, [{"data": b"served", "headers": {"Content-Disposition": 'attachment; filename="model.safetensors"'}}])
-    with pytest.raises(FileExistsError, match=re.escape(runtime.t("download.exists_runtime"))):
-        runtime.fetch_model(storage, "https://civitai.com/api/download/models/12345", "vae", runtime_only=True)
+    with pytest.raises(FileExistsError, match=re.escape(runtime.messages.t("download.exists_runtime"))):
+        runtime.downloads.fetch_model(storage, "https://civitai.com/api/download/models/12345", "vae", runtime_only=True)
     fake_requests(monkeypatch, [{"data": b"tampered"}])
     with pytest.raises(RuntimeError, match="SHA256"):
-        runtime.fetch_model(storage, link, "loras", "checked.safetensors", "0" * 64, runtime_only=True)
-    assert not (runtime.BASE / "models/loras/checked.safetensors").exists()
-    assert list((runtime.PRIVATE / "downloads").iterdir()) == [] and local.read_bytes() == b"runtime model"
+        runtime.downloads.fetch_model(storage, link, "loras", "checked.safetensors", "0" * 64, runtime_only=True)
+    assert not (runtime.paths.BASE / "models/loras/checked.safetensors").exists()
+    assert list((runtime.paths.PRIVATE / "downloads").iterdir()) == [] and local.read_bytes() == b"runtime model"
     # Without the option the same link goes to Drive as it always did.
     fake_requests(monkeypatch, [{"data": b"kept model"}])
-    runtime.fetch_model(storage, link, "loras", "kept.safetensors")
+    runtime.downloads.fetch_model(storage, link, "loras", "kept.safetensors")
     assert (drive_models / "loras/kept.safetensors").read_bytes() == b"kept model"
 
 
@@ -2451,8 +2462,8 @@ def saving(storage, monkeypatch):
     """An environment with ComfyUI, two custom nodes and user data, ready to be saved to the stand-in Drive."""
     from types import SimpleNamespace
     monkeypatch.setitem(sys.modules, "fcntl", SimpleNamespace(flock=lambda *args: None, LOCK_EX=0))
-    monkeypatch.setattr(runtime, "run", lambda args, **kwargs: "package==1.0\n" if "freeze" in map(str, args) else None)
-    comfy = runtime.BASE / "environment/ComfyUI"
+    monkeypatch.setattr(runtime.commands, "run", lambda args, **kwargs: "package==1.0\n" if "freeze" in map(str, args) else None)
+    comfy = runtime.paths.BASE / "environment/ComfyUI"
     files = {"main.py": "comfyui", ".git/HEAD": "ref: refs/heads/master", "custom_nodes/websocket_image_save.py": "shipped",
              "custom_nodes/NodeA/node.py": "node a", "custom_nodes/NodeA/.git/HEAD": "a", "custom_nodes/NodeB/__init__.py": "node b",
              "user/default/workflows/first.json": "{}", "user/default/comfy.settings.json": "{}",
@@ -2461,9 +2472,9 @@ def saving(storage, monkeypatch):
         (comfy / name).parent.mkdir(parents=True, exist_ok=True)
         (comfy / name).write_text(content)
     (comfy / ".git/refs/tags").mkdir(parents=True)  # Empty, and git needs it.
-    (runtime.BASE / "environment/runtime.json").write_text("{}")
+    (runtime.paths.BASE / "environment/runtime.json").write_text("{}")
     config = {**storage, "python": "3.12"}
-    drive = runtime.drive_root(config) / "environment"
+    drive = runtime.drive.drive_root(config) / "environment"
 
     def members(component):
         save = json.loads((drive / "latest.json").read_text())
@@ -2471,20 +2482,20 @@ def saving(storage, monkeypatch):
             return sorted(archive.getnames())
 
     def sent():
-        return json.loads((runtime.PRIVATE / "checkpoint-status.json").read_text())["sent"]
+        return json.loads((runtime.paths.PRIVATE / "checkpoint-status.json").read_text())["sent"]
 
     return SimpleNamespace(config=config, comfy=comfy, drive=drive, members=members, sent=sent,
                            latest=lambda: json.loads((drive / "latest.json").read_text()))
 
 
 def test_environment_is_saved_in_parts_each_holding_only_its_own_files(saving):
-    assert runtime.checkpoint(saving.config) is True
+    assert runtime.environment.checkpoint(saving.config) is True
     save = saving.latest()
     assert set(save["parts"]) == {"core", "user", "state", "node/NodeA", "node/NodeB"} and save["format"] == 2
     assert saving.sent() == sorted(save["parts"])
     # Each part is on Drive under the hash of its content.
     for part in save["parts"].values():
-        assert runtime.file_hash(saving.drive / "parts" / part["file"]) == part["sha256"] == part["file"][:64]
+        assert runtime.filesystem.file_hash(saving.drive / "parts" / part["file"]) == part["sha256"] == part["file"][:64]
     assert saving.members("core") == ["ComfyUI", "ComfyUI/.git", "ComfyUI/.git/HEAD", "ComfyUI/.git/refs", "ComfyUI/.git/refs/tags",
                                       "ComfyUI/custom_nodes", "ComfyUI/custom_nodes/websocket_image_save.py", "ComfyUI/main.py"]
     assert saving.members("node/NodeA") == ["ComfyUI/custom_nodes/NodeA", "ComfyUI/custom_nodes/NodeA/.git",
@@ -2497,36 +2508,36 @@ def test_environment_is_saved_in_parts_each_holding_only_its_own_files(saving):
 
 
 def test_a_save_sends_only_the_parts_that_changed(saving):
-    runtime.checkpoint(saving.config)
+    runtime.environment.checkpoint(saving.config)
     first = saving.latest()
-    assert runtime.checkpoint(saving.config) is False and runtime.checkpoint(saving.config, force=True) is False
+    assert runtime.environment.checkpoint(saving.config) is False and runtime.environment.checkpoint(saving.config, force=True) is False
     assert len(list((saving.drive / "generations").iterdir())) == 1  # Nothing changed: no new save.
     # Saving a workflow sends the user's data and nothing else.
     (saving.comfy / "user/default/workflows/second.json").write_text('{"nodes": []}')
-    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["user"]
+    assert runtime.environment.checkpoint(saving.config) is True and saving.sent() == ["user"]
     second = saving.latest()
     assert {name for name in second["parts"] if second["parts"][name] != first["parts"][name]} == {"user"}
     assert "ComfyUI/user/default/workflows/second.json" in saving.members("user")
     # Updating one custom node sends that node.
     (saving.comfy / "custom_nodes/NodeA/node.py").write_text("node a, updated")
-    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["node/NodeA"]
+    assert runtime.environment.checkpoint(saving.config) is True and saving.sent() == ["node/NodeA"]
     # Installing packages changes the list kept beside ComfyUI.
-    runtime.run = lambda args, **kwargs: "package==1.0\nextra==2.0\n" if "freeze" in map(str, args) else None
-    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["state"]
+    runtime.commands.run = lambda args, **kwargs: "package==1.0\nextra==2.0\n" if "freeze" in map(str, args) else None
+    assert runtime.environment.checkpoint(saving.config) is True and saving.sent() == ["state"]
     # A removed custom node is no longer part of the save, and nothing needs sending for that.
     shutil.rmtree(saving.comfy / "custom_nodes/NodeB")
-    assert runtime.checkpoint(saving.config) is True and saving.sent() == []
+    assert runtime.environment.checkpoint(saving.config) is True and saving.sent() == []
     assert "node/NodeB" not in saving.latest()["parts"]
     # A part Drive has lost is sent again when a save is asked for outright.
     lost = saving.drive / "parts" / saving.latest()["parts"]["core"]["file"]
     lost.unlink()
-    assert runtime.checkpoint(saving.config) is False and not lost.exists()
-    assert runtime.checkpoint(saving.config, force=True) is True and saving.sent() == ["core"]
+    assert runtime.environment.checkpoint(saving.config) is False and not lost.exists()
+    assert runtime.environment.checkpoint(saving.config, force=True) is True and saving.sent() == ["core"]
     assert (saving.drive / "parts" / saving.latest()["parts"]["core"]["file"]).exists()
     # The same files packed twice give the same archive, and so the same name on Drive.
     packed = [io.BytesIO(), io.BytesIO()]
     for sink in packed:
-        runtime.app_tree_action("archive", ["node/NodeA"], None, sink)
+        runtime.app_tree.app_tree_action("archive", ["node/NodeA"], None, sink)
     assert packed[0].getvalue() == packed[1].getvalue() and len(packed[0].getvalue()) > 0
 
 
@@ -2535,11 +2546,11 @@ def test_three_saves_are_kept_and_parts_no_save_needs_are_removed(saving):
     (saving.drive / "my-notes.txt").write_text("not the notebook's file")
     for index in range(5):
         (saving.comfy / "user/default/workflows/first.json").write_text(json.dumps({"revision": index}))
-        assert runtime.checkpoint(saving.config) is True
+        assert runtime.environment.checkpoint(saving.config) is True
         # Two saves in one second would share a name; in use they are minutes apart.
         newest = max((saving.drive / "generations").iterdir(), key=lambda item: item.name)
         newest.rename(newest.with_name(f"2026010{index + 1}T000000Z-{newest.name[17:]}"))
-        runtime.discard_old_saves(saving.drive)
+        runtime.environment.discard_old_saves(saving.drive)
     saves = [json.loads(item.read_text()) for item in (saving.drive / "generations").iterdir()]
     assert len(saves) == 3 and saving.latest() in saves
     needed = {part["file"] for save in saves for part in save["parts"].values()}
@@ -2551,47 +2562,47 @@ def test_three_saves_are_kept_and_parts_no_save_needs_are_removed(saving):
     newest = max((saving.drive / "generations").iterdir(), key=lambda item: item.name)
     kept = newest.read_text()
     newest.write_text("{broken")
-    runtime.discard_old_saves(saving.drive)
+    runtime.environment.discard_old_saves(saving.drive)
     assert (saving.drive / "parts" / ("0" * 64 + ".tar.gz")).exists()
     newest.write_text(kept)
-    runtime.discard_old_saves(saving.drive)
+    runtime.environment.discard_old_saves(saving.drive)
     assert not (saving.drive / "parts" / ("0" * 64 + ".tar.gz")).exists()
 
 
 def test_saved_parts_come_back_as_the_environment_and_are_not_sent_again(saving):
-    runtime.checkpoint(saving.config)
+    runtime.environment.checkpoint(saving.config)
     save = saving.latest()
     before = {path.relative_to(saving.comfy).as_posix(): path.read_text() for path in saving.comfy.rglob("*")
               if path.is_file() and not {"models", "output"} & set(path.relative_to(saving.comfy).parts)}
-    shutil.rmtree(runtime.BASE / "environment")  # A new runtime.
-    (runtime.BASE / "environment").mkdir()
-    (runtime.PRIVATE / "saved-parts.json").unlink()
-    remembered = runtime.restore_environment(saving.drive, save)
+    shutil.rmtree(runtime.paths.BASE / "environment")  # A new runtime.
+    (runtime.paths.BASE / "environment").mkdir()
+    (runtime.paths.PRIVATE / "saved-parts.json").unlink()
+    remembered = runtime.environment.restore_environment(saving.drive, save)
     after = {path.relative_to(saving.comfy).as_posix(): path.read_text() for path in saving.comfy.rglob("*") if path.is_file()}
     assert after == before and (saving.comfy / ".git/refs/tags").is_dir()
-    assert not (runtime.PRIVATE / "restore.tar.gz").exists()
+    assert not (runtime.paths.PRIVATE / "restore.tar.gz").exists()
     assert set(remembered) == set(save["parts"]) and all(remembered[name]["file"] == save["parts"][name]["file"] for name in remembered)
-    runtime.private_write(runtime.PRIVATE / "saved-parts.json", json.dumps(remembered))
-    assert runtime.checkpoint(saving.config, force=True) is False  # Drive already has all of it.
+    runtime.filesystem.private_write(runtime.paths.PRIVATE / "saved-parts.json", json.dumps(remembered))
+    assert runtime.environment.checkpoint(saving.config, force=True) is False  # Drive already has all of it.
     (saving.comfy / "user/default/workflows/first.json").write_text('{"edited": true}')
-    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["user"]
+    assert runtime.environment.checkpoint(saving.config) is True and saving.sent() == ["user"]
 
 
 def test_restore_refuses_parts_that_are_not_what_the_save_lists(saving):
-    runtime.checkpoint(saving.config)
+    runtime.environment.checkpoint(saving.config)
     save = saving.latest()
-    shutil.rmtree(runtime.BASE / "environment")
-    (runtime.BASE / "environment").mkdir()
+    shutil.rmtree(runtime.paths.BASE / "environment")
+    (runtime.paths.BASE / "environment").mkdir()
     for file, digest in (("../latest.json", "0" * 64), ("0" * 64 + ".tar.gz", "1" * 64), ("part.tar.gz", "part")):
         forged = json.loads(json.dumps(save))
         forged["parts"]["user"] = {"file": file, "sha256": digest}
-        with pytest.raises(RuntimeError, match=re.escape(runtime.t("setup.invalid_archive_name"))):
-            runtime.restore_environment(saving.drive, forged)
-        assert list((runtime.BASE / "environment").iterdir()) == []  # Checked before anything is unpacked.
+        with pytest.raises(RuntimeError, match=re.escape(runtime.messages.t("setup.invalid_archive_name"))):
+            runtime.environment.restore_environment(saving.drive, forged)
+        assert list((runtime.paths.BASE / "environment").iterdir()) == []  # Checked before anything is unpacked.
     part = saving.drive / "parts" / save["parts"]["user"]["file"]
     part.write_bytes(part.read_bytes() + b"tampered")
-    with pytest.raises(RuntimeError, match=re.escape(runtime.t("setup.archive_sha256_mismatch"))):
-        runtime.restore_environment(saving.drive, save)
+    with pytest.raises(RuntimeError, match=re.escape(runtime.messages.t("setup.archive_sha256_mismatch"))):
+        runtime.environment.restore_environment(saving.drive, save)
     assert not (saving.comfy / "user").exists()
 
 
@@ -2600,44 +2611,44 @@ def test_environment_saved_as_one_archive_is_restored_and_then_saved_in_parts(sa
     whole = saving.drive / "20260101T000000Z-0123456789ab.tar.gz"
     saving.drive.mkdir(parents=True, exist_ok=True)
     with tarfile.open(whole, "w:gz") as archive:
-        for child in sorted((runtime.BASE / "environment").iterdir()):
-            archive.add(child, arcname=child.name, filter=runtime.archive_filter)
-    pointer = {"archive": whole.name, "sha256": runtime.file_hash(whole), "python": "3.12", "saved_at": "2026-01-01T00:00:00Z"}
+        for child in sorted((runtime.paths.BASE / "environment").iterdir()):
+            archive.add(child, arcname=child.name, filter=runtime.environment.archive_filter)
+    pointer = {"archive": whole.name, "sha256": runtime.filesystem.file_hash(whole), "python": "3.12", "saved_at": "2026-01-01T00:00:00Z"}
     (saving.drive / "latest.json").write_text(json.dumps(pointer))
-    shutil.rmtree(runtime.BASE / "environment")
-    (runtime.BASE / "environment").mkdir()
-    assert runtime.restore_environment(saving.drive, pointer) == {}
+    shutil.rmtree(runtime.paths.BASE / "environment")
+    (runtime.paths.BASE / "environment").mkdir()
+    assert runtime.environment.restore_environment(saving.drive, pointer) == {}
     assert (saving.comfy / "custom_nodes/NodeA/node.py").read_text() == "node a" and (saving.comfy / ".git/refs/tags").is_dir()
     assert not (saving.comfy / "models").exists()
     # The next save is in parts; the old archive stays as an older save until three newer ones exist.
-    assert runtime.checkpoint(saving.config, force=True) is True
+    assert runtime.environment.checkpoint(saving.config, force=True) is True
     assert set(saving.latest()["parts"]) == {"core", "user", "state", "node/NodeA", "node/NodeB"} and whole.exists()
     for index in range(2):
         (saving.comfy / "user/default/workflows/first.json").write_text(json.dumps({"revision": index}))
-        runtime.checkpoint(saving.config)
+        runtime.environment.checkpoint(saving.config)
         newest = max((saving.drive / "generations").iterdir(), key=lambda item: item.name)
         newest.rename(newest.with_name(f"2026020{index + 1}T000000Z-{newest.name[17:]}"))
-    runtime.discard_old_saves(saving.drive)
+    runtime.environment.discard_old_saves(saving.drive)
     assert not whole.exists() and len(list((saving.drive / "generations").iterdir())) == 3
 
 
 def test_save_made_while_files_change_is_not_recorded(saving, monkeypatch):
-    runtime.checkpoint(saving.config)
+    runtime.environment.checkpoint(saving.config)
     first = saving.latest()
     (saving.comfy / "custom_nodes/NodeA/node.py").write_text("being installed")
-    packed = runtime.app_action
+    packed = runtime.app_tree.app_action
 
     def install_continues(action, *args, **kwargs):
         result = packed(action, *args, **kwargs)
         if action == "archive":
             (saving.comfy / "custom_nodes/NodeA/more.py").write_text("arrived while packing")
         return result
-    monkeypatch.setattr(runtime, "app_action", install_continues)
-    with pytest.raises(RuntimeError, match=re.escape(runtime.t("environment.busy"))):
-        runtime.checkpoint(saving.config)
+    monkeypatch.setattr(runtime.app_tree, "app_action", install_continues)
+    with pytest.raises(RuntimeError, match=re.escape(runtime.messages.t("environment.busy"))):
+        runtime.environment.checkpoint(saving.config)
     assert saving.latest() == first  # Drive still points to the last complete save.
-    monkeypatch.setattr(runtime, "app_action", packed)
-    assert runtime.checkpoint(saving.config) is True and saving.sent() == ["node/NodeA"]
+    monkeypatch.setattr(runtime.app_tree, "app_action", packed)
+    assert runtime.environment.checkpoint(saving.config) is True and saving.sent() == ["node/NodeA"]
     assert "ComfyUI/custom_nodes/NodeA/more.py" in saving.members("node/NodeA")
 
 
@@ -2650,10 +2661,10 @@ def test_save_made_while_files_change_is_not_recorded(saving, monkeypatch):
     (("ComfyUI", "user", "default", "workflows", "a.json"), "user"), (("ComfyUI", "user", "comfyui.db"), "user"),
 ])
 def test_each_file_belongs_to_one_part(parts, component):
-    assert runtime.component_of(parts) == component
+    assert runtime.environment.component_of(parts) == component
 
 
 @pytest.mark.parametrize("component", ["node/", "node/..", "node/a/b", "nodes", "", "user/../core"])
 def test_only_known_parts_can_be_packed(saving, component):
     with pytest.raises(ValueError):
-        runtime.app_tree_action("archive", [component], None, io.BytesIO())
+        runtime.app_tree.app_tree_action("archive", [component], None, io.BytesIO())

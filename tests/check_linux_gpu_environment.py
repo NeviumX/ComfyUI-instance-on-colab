@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import colab_runtime as runtime
+import runtime
 
 if sys.platform != "linux" or os.geteuid() != 0:
     raise SystemExit("Run this check as Linux root.")
@@ -21,9 +21,9 @@ if compiler is None:
 with tempfile.TemporaryDirectory(prefix="comfy-gpu-env-check-") as temporary:
     root = Path(temporary)
     root.chmod(0o755)  # The application user must reach the library.
-    runtime.ensure_app_user()
-    runtime.BASE = root / "session"
-    (runtime.BASE / "home").mkdir(parents=True)
+    runtime.commands.ensure_app_user()
+    runtime.paths.BASE = root / "session"
+    (runtime.paths.BASE / "home").mkdir(parents=True)
     libraries = root / "driver-libraries"
     libraries.mkdir()
     source = root / "driver_probe.c"
@@ -40,12 +40,12 @@ library = ctypes.CDLL('libcolab_driver_probe.so')
 assert library.colab_driver_probe() == 42
 print('unprivileged driver-library=42')
 '''
-    previous = runtime.application_environment()
+    previous = runtime.commands.application_environment()
     previous.pop("LD_LIBRARY_PATH", None)
-    failure = subprocess.run(runtime.app_command([sys.executable, "-c", child]), env=previous,
+    failure = subprocess.run(runtime.commands.app_command([sys.executable, "-c", child]), env=previous,
                              capture_output=True, text=True)
     assert failure.returncode != 0 and "libcolab_driver_probe.so" in failure.stderr
-    success = runtime.run([sys.executable, "-c", child], app=True, capture=True)
+    success = runtime.commands.run([sys.executable, "-c", child], app=True, capture=True)
     assert "unprivileged driver-library=42" in success
     print("PASS: removing LD_LIBRARY_PATH reproduces library lookup failure")
     print("PASS: the unprivileged application loads the library with inherited GPU lookup settings")

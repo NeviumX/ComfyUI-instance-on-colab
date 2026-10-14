@@ -1,17 +1,18 @@
-"""Build the Japanese and English Colab notebooks from colab_runtime.py and translations.json.
+"""Build the Japanese and English Colab notebooks from the runtime package and translations.json.
 
 translations.json holds every text a reader sees, in both languages:
   "notebook"  the text of each cell. A code cell is section -> key -> {"JP": ..., "EN": ...}
               (its title, form descriptions and printed messages); a markdown cell is
               section -> {"JP": [lines], "EN": [lines]}.
-  "runtime"   the messages of colab_runtime.py, as section -> key -> {"JP": ..., "EN": ...}.
+  "runtime"   the messages of the runtime package, as section -> key -> {"JP": ..., "EN": ...}.
 This file holds the code of the cells and refers to their texts by "section.key".
-colab_runtime.py does the same with t("section.key", value=...); the copy embedded in a
-notebook carries the messages of that notebook's language, so it needs no other file.
+The runtime package does the same with t("section.key", value=...); the copy embedded in a
+notebook carries the messages of that notebook's language (in messages.py), so it needs no
+other file. Cell 2 writes the package to PACKAGE on the Colab machine and imports it.
 """
 import ast
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import string
 import textwrap
@@ -22,7 +23,11 @@ TRANSLATIONS = HERE / "translations.json"
 LANGUAGES = ("JP", "EN")
 JAPANESE = re.compile(r"[　-ヿ一-鿿＀-￯]")
 MESSAGES_LINE = re.compile(r"(?m)^MESSAGES = None\b.*$")
-LOAD_CONFIG = "config = runtime.json.loads(runtime.CONFIG.read_text())"
+RUNTIME = HERE / "runtime"
+# Where cell 2 puts the package. Its parent must be a folder only root can write: the processes
+# the package starts of itself run there (commands.own_command).
+PACKAGE = "/content/comfy_colab_runtime"
+LOAD_CONFIG = "config = runtime.load_config()"
 
 
 def translations():
@@ -30,7 +35,7 @@ def translations():
 
 
 def runtime_messages(language, sections=None):
-    """The messages of colab_runtime.py in one language, as {"section.key": text}."""
+    """The messages of the runtime package in one language, as {"section.key": text}."""
     sections = translations()["runtime"] if sections is None else sections
     return {f"{section}.{name}": entry[language]
             for section, entries in sections.items() for name, entry in entries.items()}
@@ -42,30 +47,37 @@ def shown_values(text):
             if name is not None}
 
 
-def check_runtime(source, sections):
-    """Refuse a runtime and messages that do not fit each other."""
-    if JAPANESE.search(source):
-        raise ValueError(f"colab_runtime.py holds Japanese text: put it in {TRANSLATIONS.name}")
+def runtime_sources():
+    """The files of the runtime package, as {file name: source}."""
+    return {path.name: path.read_text(encoding="utf-8") for path in sorted(RUNTIME.glob("*.py"))}
+
+
+def check_runtime(sources, sections):
+    """Refuse a runtime and messages that do not fit each other. sources: {file name: source}."""
     tables = {language: runtime_messages(language, sections) for language in LANGUAGES}
     japanese, english = (tables[language] for language in LANGUAGES)
     used = set()
-    for node in ast.walk(ast.parse(source)):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "t"):
-            continue
-        if not (len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str) and all(keyword.arg for keyword in node.keywords)):
-            raise ValueError(f"colab_runtime.py line {node.lineno}: t() takes a literal key and named values")
-        key = node.args[0].value
-        if key not in japanese:
-            raise KeyError(f"{TRANSLATIONS.name} has no runtime message {key} (colab_runtime.py line {node.lineno})")
-        used.add(key)
-        given = {keyword.arg for keyword in node.keywords}
-        if {name for name, _, _ in shown_values(japanese[key])} != given:
-            raise ValueError(f"runtime message {key} does not show exactly the values given to it: "
-                             + ", ".join(sorted(given)) + f" (colab_runtime.py line {node.lineno})")
+    for file, source in sources.items():
+        where = f"runtime/{file}"
+        if JAPANESE.search(source):
+            raise ValueError(f"{where} holds Japanese text: put it in {TRANSLATIONS.name}")
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "t"):
+                continue
+            if not (len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str) and all(keyword.arg for keyword in node.keywords)):
+                raise ValueError(f"{where} line {node.lineno}: t() takes a literal key and named values")
+            key = node.args[0].value
+            if key not in japanese:
+                raise KeyError(f"{TRANSLATIONS.name} has no runtime message {key} ({where} line {node.lineno})")
+            used.add(key)
+            given = {keyword.arg for keyword in node.keywords}
+            if {name for name, _, _ in shown_values(japanese[key])} != given:
+                raise ValueError(f"runtime message {key} does not show exactly the values given to it: "
+                                 + ", ".join(sorted(given)) + f" ({where} line {node.lineno})")
     for key in japanese:
         if key not in used:
-            raise ValueError(f"{TRANSLATIONS.name} has a runtime message colab_runtime.py does not use: {key}")
+            raise ValueError(f"{TRANSLATIONS.name} has a runtime message the runtime package does not use: {key}")
         # A sentence may order its values differently in another language, but it must
         # show the same values, formatted the same way.
         if shown_values(japanese[key]) != shown_values(english[key]):
@@ -74,16 +86,16 @@ def check_runtime(source, sections):
             raise ValueError(f"runtime message {key} has Japanese in its English text")
 
 
-def runtime_source(language):
-    """colab_runtime.py as a notebook embeds it: with the messages of one language in it."""
-    source = (HERE / "colab_runtime.py").read_text(encoding="utf-8")
+def runtime_files(language):
+    """The runtime package as a notebook embeds it: with the messages of one language in messages.py."""
+    sources = runtime_sources()
     sections = translations()["runtime"]
-    check_runtime(source, sections)
+    check_runtime(sources, sections)
     table = "".join(f"    {key!r}: {text!r},\n" for key, text in runtime_messages(language, sections).items())
-    embedded, count = MESSAGES_LINE.subn(lambda _: "MESSAGES = {\n" + table + "}", source)
+    embedded, count = MESSAGES_LINE.subn(lambda _: "MESSAGES = {\n" + table + "}", sources["messages.py"])
     if count != 1:
-        raise ValueError("colab_runtime.py must have exactly one line that starts with MESSAGES = None")
-    return embedded
+        raise ValueError("runtime/messages.py must have exactly one line that starts with MESSAGES = None")
+    return {**sources, "messages.py": embedded}
 
 
 def build(language):
@@ -158,15 +170,25 @@ def build(language):
         COMFY_REF = COMFY_REF_OVERRIDE
     print("COMFY_REF:", COMFY_REF)
     ''')
+    package = PurePosixPath(PACKAGE)
     code("unpack", '''
-import subprocess, sys
+import importlib, shutil, subprocess, sys
 from pathlib import Path
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "aiohttp>=3.11,<4", "requests", "PyJWT[crypto]>=2.8,<3"], check=True)
-''' + "Path('/content/comfy_colab_runtime.py').write_text(" + repr(runtime_source(language)) + ", encoding='utf-8')\n" + f'''
-import importlib.util
-spec = importlib.util.spec_from_file_location("comfy_colab_runtime", "/content/comfy_colab_runtime.py")
-runtime = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runtime)
+''' + "FILES = " + repr(runtime_files(language)) + "\n" + f'''
+package = Path({str(package)!r})
+shutil.rmtree(package, ignore_errors=True)
+package.mkdir()
+for name, text in FILES.items():
+    (package / name).write_text(text, encoding="utf-8")
+Path({str(package) + ".py"!r}).unlink(missing_ok=True)  # Written by earlier versions of this notebook.
+# Run again: import the code just written, not the one imported before.
+for name in [name for name in sys.modules if name.split(".")[0] == {package.name!r}]:
+    del sys.modules[name]
+if {str(package.parent)!r} not in sys.path:
+    sys.path.insert(0, {str(package.parent)!r})
+importlib.invalidate_caches()
+import {package.name} as runtime
 print({said("unpack.done")})
 ''')
     code("setup", f'''
@@ -248,11 +270,11 @@ print({said("unpack.done")})
     #@markdown {t("status.diagnosis")}
     RUN_CONNECTION_DIAGNOSIS = False #@param {{type:"boolean"}}
     if RUN_CONNECTION_DIAGNOSIS:
-        runtime.run([runtime.sys.executable, "/content/comfy_colab_runtime.py", "diagnose"], timeout=600)
-    path = runtime.PRIVATE / "checkpoint-status.json"
+        runtime.run_diagnosis()
+    path = runtime.paths.PRIVATE / "checkpoint-status.json"
     print(path.read_text() if path.exists() else {said("status.no_status")})
     for name in ("comfy.log", "supervisor.log", "proxy.log", "tunnel.log"):
-        path = runtime.PRIVATE / name
+        path = runtime.paths.PRIVATE / name
         if path.exists():
             print("---", name)
             print(runtime.redact(path.read_text(errors="replace")[-5000:]))
