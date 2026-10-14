@@ -186,6 +186,7 @@
         "- **6-2 公開URL:** Comfy Desktopの **Remote Connection** や別の端末から使う場合。表示されたURLを開き、ノートブックに表示されたコードを入力した端末だけが接続できます。コードは10分間・1回だけ有効で、URLは10で停止すると無効になります。",
         "- **6-3 独自ドメインURL:** 自分のドメインの固定URLで、Comfy Desktopや別の端末から使う場合。Cloudflare Accessでログインした、許可済みのアカウントだけが接続できます。Cloudflareのアカウントとドメイン、事前の設定が必要です。",
         "- Desktopでは、接続の設定で **Auto-download outputs** をONにすると生成物がPCへ保存されます。ブラウザーで使った場合や取得し損ねた出力は、9でまとめて回収できます。",
+        "- 起動したセルは、そのまま実行中になって待機します。ComfyUIの画面だけを操作していると、ノートブックが無操作として切断されることがあるためです。ほかのセルを使うときは■で止め、終わったら **6-4** で待機を再開します。",
         "- 画面が表示されない場合は、7の接続診断で止まっている箇所を確認できます。",
         "- ComfyUIの画面上部の **停止** ボタンからも、環境を保存して接続を解除できます。そのままランタイムを削除することも選べます。"
       ],
@@ -198,6 +199,7 @@
         "- **6-2 Public URL:** for the **Remote Connection** of Comfy Desktop or another device. Open the URL that is shown; only a device where you enter the code shown in the notebook can connect. A code works once, for 10 minutes, and the URL stops working when you stop with cell 10.",
         "- **6-3 Custom domain URL:** for Comfy Desktop or another device, at a fixed URL on your domain. Only accounts you allowed, signed in through Cloudflare Access, can connect. Needs a Cloudflare account, a domain and some setup beforehand.",
         "- In Desktop, turn on **Auto-download outputs** in the connection settings to save generated files to your PC. If you used a browser, or some outputs were missed, collect them with cell 9.",
+        "- Once ComfyUI has started, its cell keeps running and waits, because if you only work on ComfyUI's page Colab may disconnect the notebook as idle. To use another cell, stop it with ■, then resume waiting with **6-4** when you are done.",
         "- If the UI does not appear, the connection diagnosis in cell 7 shows where it stops.",
         "- The **Stop** button at the top of the ComfyUI page also saves the environment and disconnects. You can choose to delete the runtime as well."
       ]
@@ -232,6 +234,16 @@
         "EN": "Public hostname of the tunnel (for example `comfy.example.com`)."
       }
     },
+    "keep_running": {
+      "title": {
+        "JP": "6-4. 待機を再開（切断の防止）",
+        "EN": "6-4. Resume waiting (prevents disconnection)"
+      },
+      "note": {
+        "JP": "6-1〜6-3はComfyUIを起動した後もそのまま実行中になりComfyUIを使っている間は待機します。ComfyUIの画面での操作はColabからは見えないためノートブックで何もしないと無操作としてランタイムが切断されることがありますが、セルが実行中の間は無操作として扱われにくくなります。ほかのセルを使うときは、実行中のセルを停止（■）してから実行し、終わったらこのセルを実行して待機を再開してください。停止してもComfyUIは止まりません。Colabのタブは閉じないでください。",
+        "EN": "Cells 6-1 to 6-3 keep running after ComfyUI has started, and wait while you use it. Colab cannot see what you do on ComfyUI's page, so if nothing happens in the notebook it may disconnect the runtime as idle; while a cell is running, the notebook is less likely to be taken for idle. To use another cell, stop the running cell (■) first, then run this cell to resume waiting when you are done. Stopping it does not stop ComfyUI. Do not close the Colab tab."
+      }
+    },
     "status": {
       "title": {
         "JP": "7. 保存状況とログ / 診断",
@@ -250,14 +262,14 @@
       "JP": [
         "## 保存と終了",
         "",
-        "環境（ComfyUI本体・カスタムノード・設定）は自動でGoogleドライブへ保存され、次回の3で復元されます。直前の変更を確実に残したいときは8を使います。生成物はGoogleドライブへ保存されません。",
+        "ComfyUI本体・カスタムノード・設定は自動でGoogleドライブへ保存され、次回の3で復元されます。直前の変更を確実に残したいときは8を使います。生成物はGoogleドライブへ保存されません。",
         "",
         "終了するときは、PCへの出力の取得を確認してから10を実行し、完了の表示を確認してからランタイムを削除してください。"
       ],
       "EN": [
         "## Saving and finishing",
         "",
-        "The environment (ComfyUI itself, custom nodes and settings) is saved to Google Drive automatically and restored by cell 3 next time. Use cell 8 when you want to be sure the latest changes are saved. Generated files are not saved to Google Drive.",
+        "ComfyUI itself, custom nodes and settings is saved to Google Drive automatically and restored by cell 3 next time. Use cell 8 when you want to be sure the latest changes are saved. Generated files are not saved to Google Drive.",
         "",
         "When you finish, make sure your outputs are on your PC, run cell 10, and wait for its completion message before you delete the runtime."
       ]
@@ -950,6 +962,40 @@
       "colab_unavailable": {
         "JP": "Colabのポート転送のアドレスを取得できませんでした。Colabのノートブック上で実行してください。",
         "EN": "Could not get the address of Colab's port forwarding. Run this in a Colab notebook."
+      },
+      "keep_running": {
+        "JP": "このセルはComfyUIを使っている間は実行したままにしてください。ノートブックの無操作による切断を防ぎます。ほかのセルを使うときは■で止め、終わったら6-4で待機を再開してください。",
+        "EN": "Keep this cell running while you use ComfyUI. It keeps the notebook from being disconnected as idle. To use another cell, stop it with ■, then resume waiting with cell 6-4 when you are done."
+      }
+    },
+    "keep": {
+      "not_running": {
+        "JP": "ComfyUIが起動していません。6-1〜6-3のいずれかで起動してから実行してください。",
+        "EN": "ComfyUI is not running. Start it with one of cells 6-1 to 6-3, then run this cell."
+      },
+      "status": {
+        "JP": "ComfyUIを実行中（起動から {running}）。最後の環境の保存: {saved}。",
+        "EN": "ComfyUI is running (for {running}). Environment last saved: {saved}."
+      },
+      "saved_minutes": {
+        "JP": "{minutes}分前",
+        "EN": "{minutes} min ago"
+      },
+      "saved_none": {
+        "JP": "まだありません（変更があると保存します）",
+        "EN": "not yet (saved when something changes)"
+      },
+      "saved_failed": {
+        "JP": "失敗しています（7で確認してください）",
+        "EN": "failed (see cell 7)"
+      },
+      "interrupted": {
+        "JP": "待機を止めました。ComfyUIは動き続けています。ほかのセルを使い終わったら、6-4を実行して待機を再開してください。",
+        "EN": "Stopped waiting. ComfyUI keeps running. When you are done with the other cells, run cell 6-4 to resume waiting."
+      },
+      "stopped": {
+        "JP": "ComfyUIが停止したためこのセルを終了しました。",
+        "EN": "ComfyUI has stopped so this cell has ended."
       }
     },
     "stop": {

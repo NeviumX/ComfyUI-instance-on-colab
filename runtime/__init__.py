@@ -36,8 +36,9 @@ from .drive import hide_drive_models, sync_models
 from .environment import checkpoint
 from .installation import setup, update_comfyui
 from .pairing import issue_pairing_code
-from .service import load_config, redact, run_diagnosis, start, start_with_access, stop, zip_outputs
+from .service import (keep_running, load_config, redact, run_diagnosis, start, start_with_access, stop,
+                      zip_outputs)
 
-__all__ = ["checkpoint", "fetch_model", "hide_drive_models", "issue_pairing_code", "load_config", "model_token_name",
-           "redact", "run_diagnosis", "setup", "start", "start_with_access", "stop", "sync_models", "update_comfyui",
-           "zip_outputs"]
+__all__ = ["checkpoint", "fetch_model", "hide_drive_models", "issue_pairing_code", "keep_running", "load_config",
+           "model_token_name", "redact", "run_diagnosis", "setup", "start", "start_with_access", "stop", "sync_models",
+           "update_comfyui", "zip_outputs"]

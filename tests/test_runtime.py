@@ -1024,6 +1024,60 @@ def notebook_cell(marker, language="JP"):
     return next(cell["source"] for cell in build_notebook.build(language)["cells"] if marker in cell["source"])
 
 
+def test_cell_6_4_waits_while_comfyui_runs_and_leaves_it_running_when_interrupted(tmp_path, monkeypatch, capsys):
+    t = runtime.messages.t
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path)
+    monkeypatch.setattr(runtime.service, "KEEP_RUNNING_SECONDS", 0)
+    # Not started: nothing to wait for.
+    runtime.service.keep_running(show=lambda text: pytest.fail("nothing runs, nothing to show"))
+    assert t("keep.not_running") in capsys.readouterr().out
+    running = tmp_path / "processes.json"
+    running.write_text("{}")
+    shown = []
+
+    def stopped_meanwhile(text):  # Cell 10 or the stop button on ComfyUI's page.
+        shown.append(text)
+        running.unlink()
+    runtime.service.keep_running(show=stopped_meanwhile)
+    assert len(shown) == 1 and t("keep.stopped") in capsys.readouterr().out
+    # Colab's stop button for the cell: the wait ends without an error, and ComfyUI is left alone.
+    running.write_text("{}")
+
+    def interrupted(text):
+        raise KeyboardInterrupt
+    runtime.service.keep_running(show=interrupted)
+    assert running.exists() and t("keep.interrupted") in capsys.readouterr().out
+
+
+def test_cell_6_4_shows_how_long_comfyui_has_run_and_when_it_last_saved(tmp_path, monkeypatch):
+    t = runtime.messages.t
+    monkeypatch.setattr(runtime.paths, "PRIVATE", tmp_path)
+    running, status = tmp_path / "processes.json", tmp_path / "checkpoint-status.json"
+    running.write_text("{}")
+    now = time.time()
+    os.utime(running, (now - 3725, now - 3725))
+    assert runtime.service.keep_running_status(running) == t("keep.status", running="1:02", saved=t("keep.saved_none"))
+    status.write_text(json.dumps({"ok": True, "saved_at": "2026-10-14T00:00:00Z"}))
+    os.utime(status, (now - 300, now - 300))
+    assert runtime.service.keep_running_status(running) == t("keep.status", running="1:02",
+                                                              saved=t("keep.saved_minutes", minutes=5))
+    status.write_text(json.dumps({"ok": False, "error": "Drive is gone"}))
+    assert runtime.service.keep_running_status(running) == t("keep.status", running="1:02", saved=t("keep.saved_failed"))
+
+
+@pytest.mark.parametrize("language", ["JP", "EN"])
+def test_notebook_offers_cell_6_4_right_after_the_ways_to_start(language):
+    import build_notebook
+    titles = [cell["source"].splitlines()[0] for cell in build_notebook.build(language)["cells"] if cell["cell_type"] == "code"]
+    after = [title.split()[1] for title in titles[titles.index(next(t for t in titles if t.startswith("#@title 6-3."))):][:3]]
+    assert after == ["6-3.", "6-4.", "7."]
+    cell = notebook_cell("#@title 6-4.", language)
+    assert cell.rstrip().endswith("runtime.keep_running()") and "#@param" not in cell  # Nothing to set: run it and leave it.
+    # 6-1 to 6-3 go on waiting by themselves once ComfyUI has started; 6-4 picks the wait up again.
+    for title in ("#@title 6-1.", "#@title 6-2.", "#@title 6-3."):
+        assert notebook_cell(title, language).rstrip().endswith("runtime.keep_running()")
+
+
 def test_update_check_offers_the_newest_release_and_setting_it_is_a_choice(monkeypatch, capsys):
     import build_notebook
     import subprocess
@@ -1524,6 +1578,7 @@ def test_tunnel_start_shows_a_pairing_code_instead_of_a_key_and_stop_revokes_eve
     assert pairing["attempts"] == runtime.pairing.PAIRING_ATTEMPTS
     # The address carries no secret, and the secret that signs browsers in is never shown.
     assert "https://quick-test-tunnel.trycloudflare.com/\n" in output and "access_key" not in output
+    assert runtime.messages.t("start.keep_running") in output
     assert f"ペアリングコード: {code[:4]}-{code[4:]}（10分間・1回だけ有効）" in output
     assert saved["cookie_secret"] not in output
     # The proxy holds its port before any application code runs and could take it.
@@ -1562,6 +1617,7 @@ def test_colab_start_opens_no_tunnel_and_admits_only_the_forwarded_address(tmp_p
     assert [args[-1] for args in started.spawned] == ["proxy", "supervise"]  # Nothing is opened to the outside.
     assert set(json.loads((tmp_path / "processes.json").read_text())) == {"supervisor", "proxy"}
     assert address + "/\n" in output and "ペアリングコード" not in output and not (tmp_path / "pairing.json").exists()
+    assert runtime.messages.t("start.keep_running") in output
     with pytest.raises(RuntimeError, match="6-2で起動してから"):
         runtime.pairing.issue_pairing_code(saved)
     monkeypatch.setattr(Path, "exists", lambda self: self.name == "processes.json")
@@ -1846,13 +1902,14 @@ def test_access_cell_takes_secrets_from_colab_and_only_the_hostname_from_its_for
     assert "ACCESS_AUD =" not in cell and "ACCESS_EMAILS" not in cell and "ACCESS_TEAM_DOMAIN" not in cell
     assert "runtime.start_with_access(config, ACCESS_HOSTNAME, audience, token)" in cell
     assert 'userdata.get("CF_TUNNEL_TOKEN")' in cell and 'userdata.get("CF_ACCESS_AUD")' in cell
-    # Neither secret stays in the notebook's variables.
-    assert cell.rstrip().endswith('finally:\n    token = audience = ""')
+    # Neither secret stays in the notebook's variables, also not while the cell waits afterwards.
+    assert cell.rstrip().endswith('finally:\n    token = audience = ""\nruntime.keep_running()')
     assert "http://127.0.0.1:8189" in cell  # Where the dashboard has to point the hostname: the proxy, never ComfyUI.
     unpack = notebook_cell("write_text(")
     assert '"PyJWT[crypto]>=2.8,<3"' in unpack.split("write_text(")[0]
     names = [cell["source"].split("\n")[0] for cell in build_notebook.build("EN")["cells"]]
-    assert [name[8:12] for name in names if name.startswith("#@title 6-")] == ["6-1.", "6-2.", "6-3."]
+    # The three ways to start, then the cell kept running while ComfyUI is in use.
+    assert [name[8:12] for name in names if name.startswith("#@title 6-")] == ["6-1.", "6-2.", "6-3.", "6-4."]
 
 
 def test_displayed_logs_hide_tunnel_and_access_tokens():

@@ -240,9 +240,12 @@ print({said("unpack.done")})
         print({said("refresh.skipped")})
     ''')
     markdown("connecting")
+    # Once started, each of 6-1 to 6-3 goes on as cell 6-4 would: Colab has no way to run that
+    # cell from another, and a cell still running keeps the notebook from being taken for idle.
     code("start_colab", f'''
     {LOAD_CONFIG}
     runtime.start(config, "colab")
+    runtime.keep_running()
     ''')
     code("start_tunnel", f'''
     #@markdown {t("start_tunnel.new_code")}
@@ -252,6 +255,7 @@ print({said("unpack.done")})
         runtime.issue_pairing_code(config)
     else:
         runtime.start(config, "tunnel")
+    runtime.keep_running()
     ''')
     code("start_access", f'''
     #@markdown {t("start_access.setup")}
@@ -265,6 +269,11 @@ print({said("unpack.done")})
         runtime.start_with_access(config, ACCESS_HOSTNAME, audience, token)
     finally:
         token = audience = ""
+    runtime.keep_running()
+    ''')
+    code("keep_running", f'''
+    #@markdown {t("keep_running.note")}
+    runtime.keep_running()
     ''')
     code("status", f'''
     #@markdown {t("status.diagnosis")}

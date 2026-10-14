@@ -21,7 +21,7 @@ A notebook that runs ComfyUI on a Google Colaboratory GPU, for use from your bro
 1. Click **Open in Colab** above (it opens the English notebook; the button in the [Japanese README](README_JP.md) opens the Japanese one). You can also download [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb) or [ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb) and upload it to [Google Colab](https://colab.research.google.com/). The two are the same except for the language of the text and messages.
 2. Choose a GPU runtime and run cells 1 to 3 (settings, unpacking the code, setup). Allow access to Drive in the Google dialog that appears. Each cell is operated through its fields and checkboxes; an action with a checkbox only happens when you run the cell with the box checked.
 3. Put your models into the folder for their type under `ComfyUI-Colab/models/` on Drive and run cell 5, or paste a Hugging Face or Civitai URL into cell 4. Check `RUNTIME_ONLY` there to use a model on this runtime only, without saving it to Drive.
-4. Run one of cells 6-1 to 6-3 to start ComfyUI, and open the URL it shows (see "Ways to connect" below).
+4. Run one of cells 6-1 to 6-3 to start ComfyUI, and open the URL it shows (see "Ways to connect" below). That cell keeps running and waits while you use ComfyUI (see "Idle disconnection" below).
 5. When you finish, make sure your outputs are on your PC, run cell 10, and wait for it to finish before you delete the runtime.
 
 ## Ways to connect
@@ -76,6 +76,13 @@ You need a Cloudflare account, a domain managed by Cloudflare DNS, and Cloudflar
 - **SageAttention (on by default):** [SageAttention](https://github.com/thu-ml/SageAttention) makes attention faster. The gain shows mostly with video models. Setup tries it on the GPU of the runtime and starts ComfyUI with the standard attention if it cannot be used. The output of cell 3 says which of the two it is.
 - **fp16 accumulation (off by default):** turn on `USE_FP16_ACCUMULATION` in cell 1 to start ComfyUI with `--fast fp16_accumulation`. ComfyUI calls it an experimental feature that may lower quality.
 - Both take effect during setup in cell 3. If your results come out wrong, turn off `USE_SAGE_ATTENTION` or `USE_FP16_ACCUMULATION` in cell 1 and run again on a new runtime.
+
+### Idle disconnection
+
+- Colab cannot see what you do on ComfyUI's page, so if nothing happens in the notebook it may disconnect the runtime as idle.
+- So cells 6-1 to 6-3 keep running and wait after ComfyUI has started. While a cell is running, the notebook is less likely to be taken for idle.
+- To use another cell, stop the running cell (■) first, then resume waiting with cell 6-4 when you are done. Stopping it does not stop ComfyUI.
+- Do not close the Colab tab. The maximum runtime (usually 12 hours) does not get longer, so collect your outputs on your PC in good time.
 
 ### When the UI does not appear
 

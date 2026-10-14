@@ -21,7 +21,7 @@ Google ColaboratoryのGPUでComfyUIを実行し、ブラウザーやComfy Deskto
 1. 上の **Open in Colab** をクリックします（日本語版のノートブックが開きます。英語版は [英語のREADME](README.md) のボタンから開けます）。[ComfyUI_instance_on_Colab_JP.ipynb](ComfyUI_instance_on_Colab_JP.ipynb) または [ComfyUI_instance_on_Colab_EN.ipynb](ComfyUI_instance_on_Colab_EN.ipynb) をダウンロードして、[Google Colab](https://colab.research.google.com/) へアップロードすることもできます。内容は同じで、説明文とメッセージの言語だけが異なります。
 2. GPUランタイムを選び、1〜3のセル（設定・コードの展開・セットアップ）を実行します。表示されるGoogleの画面でドライブへの接続を許可します。各セルは入力欄とチェックボックスで操作し、チェックボックスのある操作はONにして実行したときだけ行われます。
 3. Googleドライブの `ComfyUI-Colab/models/` にある種類別のフォルダーへモデルを置いて5を実行するか、Hugging Face・CivitaiのURLを4へ貼り付けます。4で `RUNTIME_ONLY` をONにすると、Googleドライブへ保存せず、そのランタイムだけで使えます。
-4. 6-1〜6-3のいずれかを実行してComfyUIを起動し、表示されたURLを開きます（下の「接続方法」）。
+4. 6-1〜6-3のいずれかを実行してComfyUIを起動し、表示されたURLを開きます（下の「接続方法」）。起動したセルはそのまま実行中になり、ComfyUIを使っている間は待機します（下の「無操作による切断」）。
 5. 終了するときは、PCへの出力の取得を確認してから10を実行し、完了を待ってからランタイムを削除します。
 
 ## 接続方法
@@ -76,6 +76,13 @@ Cloudflareのアカウント、CloudflareのDNSで管理しているドメイン
 - **SageAttention（既定でON）:** attentionの計算を速くする [SageAttention](https://github.com/thu-ml/SageAttention) を使います。効果が出やすいのは動画モデルです。セットアップ時にそのGPUで試し、使えない場合は標準のattentionで起動します。どちらになったかは3の出力に表示されます。
 - **fp16 accumulation（既定でOFF）:** 1の `USE_FP16_ACCUMULATION` をONにすると、ComfyUIを `--fast fp16_accumulation` 付きで起動します。ComfyUIが品質の下がる可能性のある実験的な機能としているものです。
 - どちらも3のセットアップ時に反映されます。生成結果に不具合が出た場合は、1の `USE_SAGE_ATTENTION` または `USE_FP16_ACCUMULATION` をOFFにして、新しいランタイムで実行し直してください。
+
+### 無操作による切断
+
+- ComfyUIの画面での操作はColabからは見えないため、ノートブックで何もしないでいると無操作としてランタイムが切断されることがあります。
+- そのため6-1〜6-3は、起動した後もそのまま実行中になって待機します。セルが実行中の間はノートブックが無操作として扱われにくくなります。
+- ほかのセルを使うときは、実行中のセルを停止（■）してから実行し、終わったら6-4で待機を再開します。停止してもComfyUIは止まりません。
+- Colabのタブは閉じないでください。最大の稼働時間（通常12時間）は延びないので、生成物は早めにPCへ取得してください。
 
 ### 画面が表示されないとき
 

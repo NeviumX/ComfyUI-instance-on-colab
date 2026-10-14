@@ -165,6 +165,7 @@ def start(config, mode, access=None, tunnel_token=""):
             print(t("start.colab_heading"))
             print(address)
             print(t("start.colab_note"))
+            print(t("start.keep_running"))
             stop_button.follow_stop_requests(config)
             return
         logfile = paths.PRIVATE / "tunnel.log"
@@ -203,6 +204,7 @@ def start(config, mode, access=None, tunnel_token=""):
             print("https://" + access["hostname"] + "/")
             print(t("access.note"))
             print(t("start.url_auto_download"))
+            print(t("start.keep_running"))
             stop_button.follow_stop_requests(config)
             return
         for _ in range(90):
@@ -213,6 +215,7 @@ def start(config, mode, access=None, tunnel_token=""):
                 filesystem.private_write(paths.CONFIG, json.dumps(config))
                 pairing.show_pairing(config)
                 print(t("start.url_auto_download"))
+                print(t("start.keep_running"))
                 stop_button.follow_stop_requests(config)
                 return
             if tunnel.poll() is not None:
@@ -222,6 +225,64 @@ def start(config, mode, access=None, tunnel_token=""):
     except Exception:
         stop(config, save=False)
         raise
+
+
+KEEP_RUNNING_SECONDS = 5  # How often cell 6-4 looks whether ComfyUI still runs.
+KEEP_RUNNING_REFRESH = 60  # How often it rewrites its status line.
+
+
+def keep_running(show=None):
+    """Cell 6-4: stay busy while ComfyUI runs, so that Colab does not take the notebook for idle.
+
+    Colab disconnects a runtime whose notebook does nothing; work on ComfyUI's page is not seen
+    there, but a cell that is running is. The wait ends when ComfyUI is stopped (cell 10 or the
+    stop button). Interrupting the cell ends only the wait: ComfyUI goes on."""
+    running = paths.PRIVATE / "processes.json"
+    if not running.exists():
+        print(t("keep.not_running"))
+        return
+    show = show or rewritten_line()
+    shown = None
+    try:
+        while running.exists():
+            if shown is None or time.monotonic() - shown >= KEEP_RUNNING_REFRESH:
+                show(keep_running_status(running))
+                shown = time.monotonic()
+            time.sleep(KEEP_RUNNING_SECONDS)
+    except KeyboardInterrupt:
+        print(t("keep.interrupted"))
+        return
+    print(t("keep.stopped"))
+
+
+def keep_running_status(running):
+    """One line: how long ComfyUI has run, and when the environment last reached Drive."""
+    minutes = int(time.time() - running.stat().st_mtime) // 60
+    status = paths.PRIVATE / "checkpoint-status.json"
+    try:
+        saved = json.loads(status.read_text())
+    except (OSError, ValueError):
+        saved = None
+    if saved is None:
+        last = t("keep.saved_none")
+    elif not saved.get("ok"):
+        last = t("keep.saved_failed")
+    else:
+        last = t("keep.saved_minutes", minutes=int(time.time() - status.stat().st_mtime) // 60)
+    return t("keep.status", running=f"{minutes // 60}:{minutes % 60:02d}", saved=last)
+
+
+def rewritten_line():
+    """A function that shows a line in the cell's output in place of the one it showed before."""
+    try:
+        from IPython import get_ipython
+        from IPython.display import Pretty, display
+    except ImportError:
+        return print
+    if get_ipython() is None:
+        return print
+    handle = display(Pretty(""), display_id=True)
+    return lambda text: handle.update(Pretty(text))
 
 
 def stop(config, save=True):
